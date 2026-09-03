@@ -259,7 +259,7 @@ export const CIRCUIT_INFO = {
   corners: 13,
   direction: 'clockwise',
   elevationChange: 23,
-  lapRecordHint: 88.5,
+  lapRecordHint: 99.4,
   description:
     'A 5.35 km road course with three genuinely different sectors: a long ' +
     'climbing straight into the heaviest stop of the lap, a technical middle ' +

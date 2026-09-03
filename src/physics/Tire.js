@@ -271,6 +271,23 @@ const FRICTION_HEAT_FRACTION = 0.30;
 const TREAD_THERMAL_MASS_PER_M = 9000;
 const CARCASS_THERMAL_MASS_PER_M = 32000;
 
+/**
+ * Hysteresis heating: a loaded tire dissipates energy simply by being
+ * deflected as it rolls, which is most of what warms a tire up on a straight.
+ * Expressed as an effective rolling-resistance coefficient, so the heat is
+ * `HYSTERESIS_COEFF * load * speed` watts.
+ */
+const HYSTERESIS_COEFF = 0.0126;
+
+/**
+ * Convective cooling of the tread, per second per Kelvin above the ambient
+ * reference. Calibrated together with the hysteresis term above so that a car
+ * driven at racing pace settles inside its tires' temperature window, an out
+ * lap leaves them below it, and sustained sliding drives them well over it.
+ */
+const COOLING_STATIC = 0.0050;
+const COOLING_PER_MS = 0.000105;
+
 export class Tire {
   /**
    * @param {object} opts
@@ -557,8 +574,8 @@ export class Tire {
                          c.warmupRate * surf.heatFactor;
     // Hysteresis: a tire heats simply by being deflected under load as it
     // rolls, which is why a tire warms up on a straight as well as in a corner.
-    const deflectionHeat = this.load * 0.013 * Math.min(Math.abs(ctx.speed), 95) *
-                           0.6 * c.warmupRate;
+    const deflectionHeat = this.load * HYSTERESIS_COEFF *
+                           Math.min(Math.abs(ctx.speed), 95) * c.warmupRate;
     // Brake heat soaks out through the rim into the carcass.
     const brakeHeat = (ctx.brakeTemp != null)
       ? Math.max(0, ctx.brakeTemp - this.surfaceTemp) * 1.8
@@ -570,7 +587,8 @@ export class Tire {
     // why slicks never come in on a wet track.
     const airspeed = Math.min(Math.abs(ctx.speed), 100);
     const wetCooling = 1.0 + clamp01(ctx.wetness) * 2.6 + clamp01(ctx.waterDepth * 90);
-    const convection = (0.012 + airspeed * 0.00042) * c.coolRate * wetCooling;
+    const convection = (COOLING_STATIC + airspeed * COOLING_PER_MS) *
+                       c.coolRate * wetCooling;
     const ambientRef = lerp(this.ambient, ctx.trackTemp ?? this.trackTemp, 0.55);
 
     const dSurface = heatIn / treadMass
@@ -603,7 +621,8 @@ export class Tire {
       thermalMult += clamp01((c.tempWindowLow - t) / 40) * 0.55;
     }
 
-    this.wear = clamp01(this.wear + (slidingWear + rollingWear) * thermalMult * dt * ctx.wearScale);
+    const wearScale = ctx.wearScale ?? 1;
+    this.wear = clamp01(this.wear + (slidingWear + rollingWear) * thermalMult * dt * wearScale);
 
     // --- Flat-spotting -----------------------------------------------------
     if (this.isLocked && Math.abs(ctx.speed) > 12) {

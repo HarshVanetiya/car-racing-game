@@ -11,7 +11,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.smoke.mjs",
+    "test:net": "node test/multiplayer.integration.mjs",
+    "test:ui": "node test/ui.flow.mjs"
   },
   "dependencies": {
     "three": "^0.185.0",

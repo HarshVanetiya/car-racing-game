@@ -894,8 +894,17 @@ export class RaceDirector {
       return (a.timing.bestLap ?? Infinity) - (b.timing.bestLap ?? Infinity);
     });
 
-    const winnerTime = list.length ? (list[0].finishTime ?? 0) + list[0].penaltySeconds : 0;
-    return list.map((e, i) => ({
+    const winner = list[0];
+    const winnerTime = winner && winner.finishTime != null
+      ? winner.finishTime + winner.penaltySeconds : null;
+    const winnerLaps = winner ? winner.lap : 0;
+    return list.map((e, i) => {
+      // Only a driver who took the flag has a race time. Everyone else is
+      // reported in laps down, never as a negative gap to the winner.
+      const finished = e.finishTime != null;
+      const totalTime = finished ? e.finishTime + e.penaltySeconds : null;
+      const lapsDown = Math.max(0, winnerLaps - e.lap);
+      return {
       position: i + 1,
       id: e.id,
       name: e.name,
@@ -903,8 +912,10 @@ export class RaceDirector {
       team: e.team,
       colour: e.colour,
       laps: e.lap,
-      totalTime: (e.finishTime ?? 0) + e.penaltySeconds,
-      gapToWinner: i === 0 ? 0 : ((e.finishTime ?? 0) + e.penaltySeconds) - winnerTime,
+      totalTime,
+      lapsDown,
+      gapToWinner: i === 0 ? 0
+        : (finished && winnerTime != null ? totalTime - winnerTime : null),
       bestLap: e.timing.bestLap,
       bestSectors: e.timing.bestSectors.slice(),
       pitStops: e.pitStops,
@@ -917,7 +928,8 @@ export class RaceDirector {
       positionsGained: e.startPosition - (i + 1),
       fastestLap: this.records.fastestLapDriver?.id === e.id,
       recoveries: e.recoveries
-    }));
+      };
+    });
   }
 
   /** Live timing tower rows. */

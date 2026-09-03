@@ -34,6 +34,12 @@ export class Transmission {
 
     // Clutch is only meaningfully modelled at low speed / launch.
     this.clutch = 1;             // 0 open, 1 locked
+
+    // A sequential box cannot jump ratios, so a request for a distant gear is
+    // remembered and walked toward one shift at a time. Without this a request
+    // made during a shift is simply lost — which is how a car ends up stuck in
+    // reverse with no way back to first.
+    this.pendingGear = null;
   }
 
   get topGear() {
@@ -75,8 +81,10 @@ export class Transmission {
   }
 
   requestGear(g) {
-    const target = clamp(g, 0, this.topGear);
-    if (target === this.gear || this.isShifting) return false;
+    const target = clamp(Math.round(g), 0, this.topGear);
+    if (target === this.gear) { this.pendingGear = null; return false; }
+    this.pendingGear = target;
+    if (this.isShifting) return false;
     return target > this.gear ? this.requestUpshift() : this.requestDownshift();
   }
 
@@ -124,6 +132,15 @@ export class Transmission {
         this.shiftEventPending = this.lastShiftDirection;
       }
     }
+    // Continue walking toward a gear that was asked for while the box was busy.
+    if (!this.isShifting && this.pendingGear != null) {
+      if (this.pendingGear === this.gear) {
+        this.pendingGear = null;
+      } else if (this.shiftCooldown <= 0) {
+        if (this.pendingGear > this.gear) this.requestUpshift();
+        else this.requestDownshift();
+      }
+    }
   }
 
   /**
@@ -158,6 +175,7 @@ export class Transmission {
   reset(gear = 1) {
     this.gear = gear;
     this.targetGear = gear;
+    this.pendingGear = null;
     this.isShifting = false;
     this.shiftTimer = 0;
     this.shiftCooldown = 0;

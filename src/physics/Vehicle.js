@@ -589,9 +589,18 @@ export class Vehicle {
     const drivenOmega = (this.wheels[RL].angularVelocity + this.wheels[RR].angularVelocity) * 0.5;
     if (this.controls.shiftUp) { trans.requestUpshift(); this.controls.shiftUp = false; }
     if (this.controls.shiftDown) { trans.requestDownshift(); this.controls.shiftDown = false; }
-    if (this.controls.requestGear != null) {
-      trans.requestGear(this.controls.requestGear);
+    const gearRequest = this.controls.requestGear;
+    if (gearRequest != null) {
+      trans.requestGear(gearRequest);
       this.controls.requestGear = null;
+    } else if (trans.automatic && trans.gear === 0 && !trans.inNeutral &&
+               forwardSpeed > -0.5) {
+      // An automatic box never sits in reverse unless the car is actually
+      // reversing. Without this, anything that leaves it in reverse — a spin
+      // recovery that ran out of time, a request dropped during a shift —
+      // strands the car driving backwards under full throttle, because the
+      // auto shift logic below only ever shifts up from first.
+      trans.requestGear(1);
     }
     // Shift decisions use the engine speed implied by ROAD speed so that
     // wheelspin cannot run the car up through the gearbox while it is barely
@@ -614,7 +623,10 @@ export class Vehicle {
     // it bites again. It is also the only reason the car can move at all from
     // rest, since at zero road speed the gearbox input is stationary.
     let engagement, speedEngage;
-    if (trans.isShifting || trans.gear === 0) {
+    // Only a shift or true neutral opens the clutch outright. Reverse is a
+    // gear like any other and engages the same way, or the car could never
+    // back out of a gravel trap.
+    if (trans.isShifting || trans.inNeutral) {
       engagement = 0;
       speedEngage = 0;
     } else {

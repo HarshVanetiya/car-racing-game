@@ -428,7 +428,8 @@ export class ScreenManager extends EventTarget {
                 <td class="num">${
                   r.status === 'dnf' ? 'DNF'
                   : r.position === 1 ? formatLapTime(r.totalTime)
-                  : formatGap(r.gapToWinner)}</td>
+                  : r.gapToWinner != null ? formatGap(r.gapToWinner)
+                  : formatGap(null, r.lapsDown)}</td>
                 <td class="num">${formatLapTime(r.bestLap)}</td>
                 <td class="num">${r.pitStops}</td>
                 <td>${r.tireStrategy.map((t) => {

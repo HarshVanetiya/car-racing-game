@@ -895,7 +895,16 @@ export class TrackModel {
     const dx = x - this.sx[i];
     const dz = z - this.sz[i];
     const lateral = dx * this.lx[i] + dz * this.lz[i];
-    return Math.abs(lateral - pitLat) <= this.pit.width * 0.5 + 1.5;
+
+    // Inside the pit corridor...
+    if (Math.abs(lateral - pitLat) > this.pit.width * 0.5 + 1.5) return false;
+
+    // ...AND genuinely off the racing surface on the pit side. Where the pit
+    // lane tapers in and out its corridor passes close to the circuit, so the
+    // corridor test alone puts cars on the racing line "in the pit lane" —
+    // which then hands the whole field pit-speeding penalties at racing speed.
+    const edge = this.width[i] * 0.5 + this.circuit.KERB_WIDTH;
+    return lateral * Math.sign(pitLat) > edge;
   }
 
   /**

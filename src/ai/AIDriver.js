@@ -102,6 +102,8 @@ export class AIDriver {
     this._recovering = false;
     this._recoverTimer = 0;
     this._recoverSteer = 1;
+    this._recoverPhase = 'reverse';
+    this._recoverPhaseTimer = 0;
     this._nearAimDistance = 0;
     this._nearTargetLateral = 0;
     this._currentLateral = 0;
@@ -757,11 +759,17 @@ export class AIDriver {
   }
 
   /**
-   * Spin and beaching recovery.
+   * Spin and beaching recovery — a three-point turn, driven through the same
+   * controls as everything else.
    *
-   * Returns true when it has taken control of the car. A spun car reverses to
-   * straighten up and only then rejoins; the time this costs is real, which is
-   * exactly the point — spinning has to be expensive.
+   * Returns true when it has taken control of the car. The manoeuvre alternates
+   * between reversing and pulling forward, flipping the steering each time so
+   * that both halves rotate the car the SAME way: for a given lock, a car
+   * going backwards yaws opposite to one going forwards, so holding one lock
+   * throughout would simply undo the previous phase.
+   *
+   * The time this costs is real, which is exactly the point — spinning has to
+   * be expensive.
    */
   _updateRecovery(dt, ctx) {
     const v = this.vehicle;
@@ -771,34 +779,69 @@ export class AIDriver {
     yawErr = ((yawErr + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
     const facingWrongWay = Math.abs(yawErr) > 1.75;   // > 100 degrees
     const crawling = v.speed < 6;
+    const forwardSpeed = v.body.forwardSpeed;
 
     if (this._recovering) {
       this._recoverTimer += dt;
-      const done = (!facingWrongWay && v.speed > 2) || this._recoverTimer > 9;
-      if (done) {
+      this._recoverPhaseTimer += dt;
+      // Done once the nose is back within ~35 degrees of the track direction
+      // and the car is genuinely driving forwards again — not merely moving,
+      // which a car reversing away from the circuit also is.
+      const aligned = Math.abs(yawErr) < 0.62;
+      if ((aligned && forwardSpeed > 2) || this._recoverTimer > 16) {
         this._recovering = false;
+        this._recoverTimer = 0;
         c.requestGear = 1;
         return false;
+      }
+      // Swap between backing up and pulling forward. Backing up gets a little
+      // longer because it is what opens up the room to turn into.
+      const phaseLength = this._recoverPhase === 'reverse' ? 2.6 : 1.9;
+      if (this._recoverPhaseTimer > phaseLength) {
+        this._recoverPhaseTimer = 0;
+        this._recoverPhase = this._recoverPhase === 'reverse' ? 'forward' : 'reverse';
       }
     } else if (facingWrongWay && crawling) {
       this._recovering = true;
       this._recoverTimer = 0;
-      // Reverse out toward whichever way needs less rotation.
+      this._recoverPhaseTimer = 0;
+      this._recoverPhase = 'reverse';
+      // Rotate whichever way needs less of a turn to point down the road.
       this._recoverSteer = Math.sign(yawErr) || 1;
     } else {
       return false;
     }
 
-    // Select reverse and back up, steering so the nose swings round.
-    c.requestGear = 0;
-    c.throttle = 0.42;
-    c.brake = 0;
+    // Reversing with lock L rotates the car the opposite way to driving
+    // forward with the same lock, so the sign flips with the phase to keep
+    // the nose swinging the same way throughout.
+    const reversing = this._recoverPhase === 'reverse';
+    c.requestGear = reversing ? 0 : 1;
     c.drs = false;
-    // In reverse the steering acts the other way round.
-    c.steer = clamp(-this._recoverSteer * 0.9, -1, 1);
+
+    // Selecting a gear does not reverse the car's momentum. Until it is
+    // actually travelling the way this phase wants, stand on the brakes: a
+    // car still rolling backwards in first gear would be rotated the wrong
+    // way by the steering below.
+    const wanted = reversing ? -1 : 1;
+    const rolling = Math.abs(forwardSpeed) > 0.6 && Math.sign(forwardSpeed) !== wanted;
+    if (rolling) {
+      c.throttle = 0;
+      c.brake = 1;
+      this._recoverPhaseTimer = 0;   // the phase has not started working yet
+    } else {
+      c.throttle = 0.42;
+      c.brake = 0;
+    }
+
+    // The steering sign follows the direction the car is TRAVELLING, not the
+    // gear selected, so that both halves of the turn rotate the nose the same
+    // way and the manoeuvre converges instead of undoing itself.
+    const travellingBackwards = forwardSpeed < -0.3;
+    c.steer = clamp(this._recoverSteer * (travellingBackwards ? 0.9 : -0.9), -1, 1);
     this._appliedSteer = c.steer;
     this._appliedThrottle = c.throttle;
-    this._appliedBrake = 0;
+    this._appliedBrake = c.brake;
     return true;
   }
 
@@ -922,5 +965,9 @@ export class AIDriver {
     this.line = LINE_RACING;
     this.lineBlend = 0;
     this.savingMode = 0;
+    this._recovering = false;
+    this._recoverTimer = 0;
+    this._recoverPhase = 'reverse';
+    this._recoverPhaseTimer = 0;
   }
 }
