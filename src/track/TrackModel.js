@@ -56,8 +56,14 @@ export class TrackModel {
     // Rubber laid down on the racing line, 0..1, evolving during a session.
     this.rubber = new Float32Array(this.sampleCount).fill(0.15);
     // Per-sample wetness and standing water, driven by the weather system.
+    // `wetness` is the OFF-LINE baseline; `lineDry` is how far traffic has
+    // swept the racing line clear of it. Storing the dry line as its own
+    // channel, resolved laterally at query time, is what lets a drying track
+    // have a usable line while the rest of the circuit is still soaked —
+    // a single value per sample could not represent that at all.
     this.wetness = new Float32Array(this.sampleCount).fill(0);
     this.waterDepth = new Float32Array(this.sampleCount).fill(0);
+    this.lineDry = new Float32Array(this.sampleCount).fill(0);
   }
 
   // -------------------------------------------------------------------------
@@ -777,13 +783,15 @@ export class TrackModel {
     out.index = i;
 
     // --- Conditions --------------------------------------------------------
-    out.wetness = this.wetness[i];
-    out.waterDepth = this.waterDepth[i];
-    // Rubber only builds up on the racing line itself, so the marbles off-line
-    // really are more slippery.
+    // How close this contact patch is to the racing line. Both rubber and the
+    // dry line are laid down by traffic, so both follow it.
     const lineOff = this.lineRacing[i];
     const offLine = Math.abs(lateral - lineOff);
     const onLine = 1 - smoothstep(1.6, 5.2, offLine);
+
+    const dried = 1 - this.lineDry[i] * onLine;
+    out.wetness = this.wetness[i] * dried;
+    out.waterDepth = this.waterDepth[i] * dried;
     out.rubber = surface === SurfaceType.ASPHALT ? this.rubber[i] * onLine : 0;
 
     return out;
