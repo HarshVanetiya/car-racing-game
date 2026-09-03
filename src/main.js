@@ -509,7 +509,7 @@ class Game {
   // -------------------------------------------------------------------------
 
   frame(dt) {
-    const controls = this.input.update(dt);
+    const controls = this.input.update();
 
     if (!this.session) {
       // Menu backdrop: slowly orbit the circuit so the menu is not static.
@@ -524,7 +524,10 @@ class Game {
     if (!this.paused) {
       this._applyPlayerControls(controls, dt);
       this._updateSpectator(controls);
-      this.session.update(dt);
+      // Feed the pedals and the wheel to the car on every physics step, not
+      // once a frame: at 240 Hz that is what keeps steering smooth on a
+      // machine that cannot hold 60 fps.
+      this.session.update(dt, (stepDt) => this._advancePlayerAxes(stepDt));
       if (this.multiplayer && this.net) {
         this.net.update(dt, this.playerVehicle);
         this.net.interpolate(dt);
@@ -545,9 +548,6 @@ class Game {
     const entry = this.playerEntry;
     const finished = entry && entry.status === DriverStatus.FINISHED;
 
-    v.controls.throttle = finished ? 0 : c.throttle;
-    v.controls.brake = finished ? Math.max(c.brake, 0.2) : c.brake;
-    v.controls.steer = c.steer;
     v.controls.handbrake = c.handbrake;
     v.controls.drs = c.drs;
     if (c.shiftUp) v.controls.shiftUp = true;
@@ -562,6 +562,23 @@ class Game {
     }
     if (c.pitRequest) this._togglePitRequest();
     if (c.resetCar) this._requestRecovery();
+  }
+
+  /**
+   * Advance the analogue controls by one physics step and hand them to the car.
+   * Everything edge-triggered stays in `_applyPlayerControls`, which runs once
+   * a frame — a button press should fire once, not once per step.
+   */
+  _advancePlayerAxes(stepDt) {
+    const axes = this.input.advanceAxes(stepDt);
+    const v = this.playerVehicle;
+    if (!v || this.spectating) return;
+    const entry = this.playerEntry;
+    const finished = entry && entry.status === DriverStatus.FINISHED;
+
+    v.controls.throttle = finished ? 0 : axes.throttle;
+    v.controls.brake = finished ? Math.max(axes.brake, 0.2) : axes.brake;
+    v.controls.steer = axes.steer;
   }
 
   _togglePitRequest() {

@@ -464,10 +464,36 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
+  /**
+   * Quality tiers, ordered by what actually costs a weak machine frames.
+   *
+   * Resolution first: every pixel is shaded, so rendering below the display's
+   * own scale is the strongest single lever there is. Then shadows, which cost
+   * a second pass over the whole scene. Antialiasing last, being the cheapest
+   * of the three to give up.
+   */
   setQuality(quality) {
     this.quality = quality;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1.25));
-    this.renderer.shadowMap.enabled = quality !== 'low';
+    const dpr = window.devicePixelRatio || 1;
+    const scale = quality === 'high' ? Math.min(dpr, 2)
+                : quality === 'medium' ? Math.min(dpr, 1.25)
+                : Math.min(dpr, 1) * 0.8;
+    this.renderer.setPixelRatio(scale);
+
+    const shadows = quality !== 'low';
+    this.renderer.shadowMap.enabled = shadows;
+    if (this.sun) {
+      this.sun.castShadow = shadows;
+      if (shadows) {
+        const size = quality === 'high' ? 2048 : 1024;
+        if (this.sun.shadow.mapSize.x !== size) {
+          this.sun.shadow.mapSize.set(size, size);
+          // The map has to be thrown away for a new size to take effect.
+          this.sun.shadow.map?.dispose();
+          this.sun.shadow.map = null;
+        }
+      }
+    }
   }
 
   dispose() {

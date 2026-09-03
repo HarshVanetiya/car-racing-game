@@ -138,8 +138,9 @@ server/         Authoritative race server
 test/           Unit tests, plus browser, UI and multiplayer integration tests
 ```
 
-Nothing is loaded from an asset file: the cars, the circuit and every sound are
-generated at runtime.
+The circuit and every sound are generated at runtime. The one asset is
+`public/models/car.glb`, the car body; if it cannot be fetched the game falls
+back to a procedural car and carries on.
 
 ## Tests
 
@@ -149,6 +150,7 @@ npm run test:browser  # loads the built game, drives it, checks WebGL/HUD/camera
 npm run test:ui       # walks the menu, setup and results screens
 npm run test:modes    # starts every mode, then runs a weekend end to end
 npm run test:net      # two real clients against the race server
+npm run profile       # where each frame's time goes on THIS machine
 ```
 
 The unit tests assert behaviours rather than numbers: that grip peaks and then
@@ -156,6 +158,35 @@ falls away, that braking eats cornering grip, that a heavier car is never
 faster, that a stationary car cannot rotate, that skill changes cornering speed
 but not top speed. The browser, UI and multiplayer tests need a server running
 (`npm run dev`, or `npm run build && npm run preview`).
+
+## Performance
+
+The simulation is cheap and the rendering is what costs: a full 20-car grid at
+240 Hz is about 14% of one core, while drawing the scene is everything else.
+Two things follow from that.
+
+**Draw calls are the budget.** The circuit is built as separate pieces — a kerb
+block, a barrier segment, a tree — which is the right way to write it and the
+wrong way to draw it. `mergeStatic.js` collapses everything static into one
+mesh per material per stretch of track after the builders have run, which took
+the circuit from 951 meshes and 590 draw calls a frame down to around 220. The
+car model does the same job for the cars: one mesh per material instead of the
+two dozen the procedural body needs.
+
+**Input runs at the simulation's rate, not the display's.** The car steps at
+240 Hz, and the pedals and wheel are advanced once per step rather than once
+per frame. Without that, a machine managing 20 fps feeds the tyres a staircase
+and the car feels disconnected however good the physics underneath is.
+
+If it still runs badly, `npm run profile` says where the time is going.
+`wallPerFrame` far above the sum of the parts means the GPU is the limit — turn
+the quality down in Settings, which drops the render resolution first, then
+shadows, then antialiasing.
+
+Running the race server on the same machine as the client costs one more full
+simulation: the server is authoritative and simulates every car itself. That is
+about 14% of a core for a 20-car grid, so it is not usually what makes a game
+stutter — but it is a whole core's worth of headroom you no longer have.
 
 ## Controls
 

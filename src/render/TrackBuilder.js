@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeStatic } from './mergeStatic.js';
 import { Vec3 } from '../math/Vec3.js';
 import { SurfaceType } from '../physics/Surfaces.js';
 import { clamp, clamp01, lerp, smoothstep } from '../math/MathUtils.js';
@@ -16,6 +17,12 @@ import { clamp, clamp01, lerp, smoothstep } from '../math/MathUtils.js';
  * Everything is generated — there are no model or texture files to load, which
  * keeps the whole game a single JavaScript bundle.
  */
+
+/**
+ * Length of circuit each merged mesh covers, in metres. Smaller means more
+ * draw calls but tighter culling; larger means the reverse.
+ */
+const CHUNK_LENGTH = 320;
 
 const COLOURS = {
   asphalt: 0x2c2f36,
@@ -72,7 +79,44 @@ export class TrackBuilder {
     this._buildPitLane();
     this._buildStartGantry();
     this._buildTrackside();
+    this._mergeStatic();
     return this.group;
+  }
+
+  /**
+   * Collapse the static circuit into one mesh per material.
+   *
+   * The builders above are written for clarity — a kerb block, a barrier
+   * segment, a tree — which leaves the circuit as roughly a thousand separate
+   * meshes. None of them ever move, and every one of them costs a draw call
+   * twice over (once for the shadow map, once for the scene), which is what
+   * puts a mid-range machine on its knees. Merging them by material turns the
+   * whole circuit into a handful of draw calls without changing how any of it
+   * looks or how the code that builds it is written.
+   *
+   * Anything whose material or transform changes at runtime — the road, whose
+   * shine tracks the weather, and the starting lights — is left alone.
+   */
+  /**
+   * Which slice of the lap a piece of geometry sits in. Chunks are sized so a
+   * merged mesh spans a few hundred metres — long enough that merging is
+   * worth it, short enough that most of the circuit is off-screen and culled.
+   */
+  _chunkIndexOf(geometry) {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) return 0;
+    const cx = (box.min.x + box.max.x) * 0.5;
+    const cz = (box.min.z + box.max.z) * 0.5;
+    // Anything far larger than a chunk (the ground plane) is left whole.
+    if (box.max.x - box.min.x > CHUNK_LENGTH * 2 ||
+        box.max.z - box.min.z > CHUNK_LENGTH * 2) return 'whole';
+    const i = this.track.nearestIndex(cx, cz);
+    return Math.floor(this.track.dist[i] / CHUNK_LENGTH);
+  }
+
+  _mergeStatic() {
+    this.meshCount = mergeStatic(this.group, (geometry) => this._chunkIndexOf(geometry));
   }
 
   /** Ring of points across the track at sample `i`, at a lateral offset. */
@@ -485,6 +529,8 @@ export class TrackBuilder {
         bulb.position.y = row * -0.75;
         lightGroup.add(bulb);
       }
+      // The countdown switches these on, so they must survive the merge.
+      lightGroup.userData.dynamic = true;
       this.startLights.push(lightGroup);
       g.add(lightGroup);
     }

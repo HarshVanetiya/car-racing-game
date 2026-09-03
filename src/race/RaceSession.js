@@ -173,7 +173,7 @@ export class RaceSession {
    * needed. A fixed step matters here beyond the usual stability argument: it
    * is what lets the server and every client agree about what the cars did.
    */
-  update(frameTime) {
+  update(frameTime, beforeStep = null) {
     this.frameEvents.length = 0;
     this.impacts.length = 0;
 
@@ -182,6 +182,10 @@ export class RaceSession {
 
     let steps = 0;
     while (this.accumulator >= PHYSICS_DT && steps < 32) {
+      // The driver's inputs are advanced per step rather than per frame, so
+      // the controls stay smooth even when frames are long and several steps
+      // run back to back.
+      if (beforeStep) beforeStep(PHYSICS_DT);
       this.step(PHYSICS_DT);
       this.accumulator -= PHYSICS_DT;
       steps++;

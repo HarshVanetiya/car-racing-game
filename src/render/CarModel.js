@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { mergeStatic } from './mergeStatic.js';
+import { loadCarBody, carBodyIfReady, instantiateCarBody } from './CarBodyModel.js';
 import { clamp, clamp01, lerp } from '../math/MathUtils.js';
 
 /**
@@ -40,9 +42,79 @@ export class CarModel {
     this.wheelMeshes = [];
     this._buildWheels();
 
+    // The parts that move or change colour have to survive the merge below.
+    for (const part of [this.frontWing, this.rearWing, this.rainLight, this.helmet]) {
+      if (part) part.userData.dynamic = true;
+    }
+    mergeStatic(this.bodyGroup);
+
+    // Swap in the shared car model when it is available. It is one mesh per
+    // material against the procedural body's two dozen, so on a full grid it
+    // is the difference between a comfortable frame rate and a bad one — and
+    // it simply looks better. If it never arrives, the body built above is
+    // what the player sees, and nothing else changes.
+    this.usingModel = false;
+    const ready = carBodyIfReady();
+    if (ready) this._applyModel(ready);
+    else loadCarBody(carDef.wheelbase).then((body) => { if (body) this._applyModel(body); });
+
     // Visual state
     this.drsOpen = 0;
     this.damageState = { frontWing: 1, rearWing: 1 };
+  }
+
+  /**
+   * Replace the procedural body with the loaded model.
+   *
+   * The model has no separable wings, so the two parts the simulation animates
+   * — the DRS flap and the wet-weather light — are carried across and placed
+   * from the model's own measurements rather than hard-coded offsets.
+   */
+  _applyModel(source) {
+    if (this.usingModel || !source) return;
+    const body = instantiateCarBody(source, this.colour, this.accent);
+
+    // Sit the model on the road: the physics origin is the centre of mass,
+    // which is `cogHeight` above the surface.
+    body.position.y = -this.car.cogHeight;
+    this.group.add(body);
+    this.modelBody = body;
+
+    const size = source.size;
+    const halfLen = size.z * 0.5;
+
+    // Re-home the animated parts onto the model.
+    if (this.drsFlap) {
+      body.add(this.drsFlap);
+      this.drsFlap.position.set(0, size.y * 0.92, -halfLen + 0.16);
+      this.drsFlap.userData.dynamic = true;
+    }
+    if (this.rainLight) {
+      body.add(this.rainLight);
+      this.rainLight.position.set(0, size.y * 0.34, -halfLen + 0.06);
+      this.rainLight.userData.dynamic = true;
+    }
+
+    // Everything else the procedural body drew is now redundant. Drop it
+    // rather than hiding it: a hidden mesh still costs a matrix update every
+    // frame, and on a full grid that is twenty cars' worth of dead weight.
+    this.group.remove(this.bodyGroup);
+    this.bodyGroup.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.dispose();
+      const materials = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of materials) {
+        const i = this._materials.indexOf(m);
+        if (i >= 0) this._materials.splice(i, 1);
+        m.dispose();
+      }
+    });
+    this.bodyGroup.clear();
+    this.frontWing = null;
+    this.rearWing = null;
+    this.helmet = null;
+
+    this.usingModel = true;
   }
 
   _mat(color, opts = {}) {
@@ -314,7 +386,10 @@ export class CarModel {
     this.drsFlap.rotation.x = -this.drsOpen * 1.15;
 
     // --- Damage -------------------------------------------------------------
-    if (state.damage) {
+    // Wing damage is shown by the wings themselves, which only the procedural
+    // body has as separate pieces. On the model the damage still reads through
+    // the debris, the handling and the HUD.
+    if (state.damage && !this.usingModel) {
       const fw = state.damage.frontWing ?? 1;
       const rw = state.damage.rearWing ?? 1;
       // A destroyed wing is gone; a damaged one hangs askew.
@@ -336,7 +411,7 @@ export class CarModel {
 
     // Driver's head leans with lateral load — a small thing that makes the
     // g-forces legible from outside the car.
-    if (this.helmet && state.lateralG != null) {
+    if (this.helmet && !this.usingModel && state.lateralG != null) {
       this.helmet.position.x = clamp(-state.lateralG * 0.035, -0.09, 0.09);
     }
   }

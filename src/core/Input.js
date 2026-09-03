@@ -47,6 +47,10 @@ export class Input {
     this.steer = 0;
     this.handbrake = 0;
 
+    // What the driver is currently asking for, refreshed once per frame; the
+    // axes above chase it at the simulation's rate.
+    this._target = { throttle: 0, brake: 0, steer: 0, instant: false };
+
     this.drs = false;
     this.lookBack = false;
     this.gamepadIndex = null;
@@ -157,42 +161,74 @@ export class Input {
   }
 
   /**
-   * Produce analogue controls for this frame.
-   * @returns {object} { throttle, brake, steer, handbrake, drs, ... }
+   * Move the analogue axes toward what the driver is asking for.
+   *
+   * Called once per PHYSICS step, not once per frame. The distinction is the
+   * difference between controls that feel connected and controls that do not:
+   * the car simulates at 240 Hz, and if the steering only advanced when a
+   * frame was drawn, then on a machine managing 20 fps the wheel would arrive
+   * in seventeen-percent jumps and the car would be fed a staircase. Ramping
+   * here means the input the tyres see is as smooth as the physics, whatever
+   * the display is doing.
+   *
+   * @returns {object} the current axis positions
    */
-  update(dt) {
-    const pad = this._pollGamepad();
-    this.justPressedGamepad = {};
-
-    if (pad && this.usingGamepad) {
-      // Analogue input passes through directly.
-      this.throttle = clamp01(pad.throttle);
-      this.brake = clamp01(pad.brake);
-      this.steer = clamp(pad.steer, -1, 1);
-      this.handbrake = pad.handbrake;
-      this.drs = !!pad.drs;
-      this._padEdge(pad);
+  advanceAxes(dt) {
+    const t = this._target;
+    if (t.instant) {
+      // Nothing to ramp: the pedal positions are real measurements.
+      this.throttle = t.throttle;
+      this.brake = t.brake;
+      this.steer = t.steer;
     } else {
       const r = this.rates;
       // Throttle and brake ramp toward their target rather than snapping.
-      const wantThrottle = this.isDown('throttle') ? 1 : 0;
-      const wantBrake = this.isDown('brake') ? 1 : 0;
-      this.throttle = approach(this.throttle, wantThrottle, r.throttleUp, r.throttleDown, dt);
-      this.brake = approach(this.brake, wantBrake, r.brakeUp, r.brakeDown, dt);
+      this.throttle = approach(this.throttle, t.throttle, r.throttleUp, r.throttleDown, dt);
+      this.brake = approach(this.brake, t.brake, r.brakeUp, r.brakeDown, dt);
 
       // Steering ramps in and springs back to centre.
-      const l = this.isDown('left'), rr = this.isDown('right');
-      const wantSteer = (rr ? 1 : 0) - (l ? 1 : 0);
-      if (wantSteer === 0) {
+      if (t.steer === 0) {
         this.steer = approach(this.steer, 0, r.steerReturn, r.steerReturn, dt);
       } else {
         // Turning the other way is quicker than building lock from centre,
         // which is what makes a correction possible on a keyboard.
-        const rate = Math.sign(this.steer) !== 0 && Math.sign(this.steer) !== wantSteer
+        const rate = Math.sign(this.steer) !== 0 && Math.sign(this.steer) !== t.steer
           ? r.steerUp * 2.0 : r.steerUp;
-        this.steer = clamp(this.steer + wantSteer * rate * dt, -1, 1);
+        this.steer = clamp(this.steer + t.steer * rate * dt, -1, 1);
       }
+    }
+    return { throttle: this.throttle, brake: this.brake, steer: this.steer };
+  }
 
+  /**
+   * Read the devices and work out what the driver is asking for.
+   *
+   * This runs once per rendered frame, because that is when the keyboard and
+   * gamepad can actually have changed. It does NOT move the analogue axes:
+   * `advanceAxes` does that, once per physics step, so the ramp runs at the
+   * simulation's rate rather than the display's (see the note there). A caller
+   * that never calls `advanceAxes` will find the pedals and wheel never move.
+   *
+   * @returns {object} { throttle, brake, steer, handbrake, drs, ... }
+   */
+  update() {
+    const pad = this._pollGamepad();
+    this.justPressedGamepad = {};
+
+    if (pad && this.usingGamepad) {
+      // A stick is already analogue: what it reads is what the driver wants.
+      this._target.throttle = clamp01(pad.throttle);
+      this._target.brake = clamp01(pad.brake);
+      this._target.steer = clamp(pad.steer, -1, 1);
+      this._target.instant = true;
+      this.handbrake = pad.handbrake;
+      this.drs = !!pad.drs;
+      this._padEdge(pad);
+    } else {
+      this._target.throttle = this.isDown('throttle') ? 1 : 0;
+      this._target.brake = this.isDown('brake') ? 1 : 0;
+      this._target.steer = (this.isDown('right') ? 1 : 0) - (this.isDown('left') ? 1 : 0);
+      this._target.instant = false;
       this.handbrake = this.isDown('handbrake') ? 1 : 0;
       this.drs = this.isDown('drs');
     }
@@ -247,6 +283,7 @@ export class Input {
 
   reset() {
     this.throttle = 0; this.brake = 0; this.steer = 0; this.handbrake = 0;
+    this._target = { throttle: 0, brake: 0, steer: 0, instant: false };
     this.keys.clear(); this.justPressed.clear();
   }
 

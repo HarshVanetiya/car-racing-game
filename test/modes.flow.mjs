@@ -40,7 +40,8 @@ async function start(mode) {
     g._pendingMode = m;
     g.startSinglePlayer(m);
   }, mode);
-  await page.waitForTimeout(5000);
+  await page.waitForFunction(() => !!window.__apex.session, null, { timeout: 90000 });
+  await page.waitForTimeout(1500);          // let the opening frames settle
   return page.evaluate(() => {
     const g = window.__apex, s = g.session;
     if (!s) return null;
@@ -89,12 +90,25 @@ async function endSession() {
     d.drivers.forEach((e, i) => { e.timing.bestLap = 84 + i * 0.55; });
     d.sessionDuration = d.raceTime + 0.2;
   });
-  await page.waitForTimeout(900);
+  // The flag comes out once the clock passes the session length. Wait for it
+  // rather than sleeping: the simulation advances on rendered frames, and a
+  // software-rendered browser draws them slowly enough that any fixed delay is
+  // a coin toss.
+  await page.waitForFunction(
+    () => window.__apex.session?.director.phase === 'checkered',
+    null, { timeout: 90000 }
+  );
+
+  // Everyone completes the lap they were on.
   await page.evaluate(() => {
     const d = window.__apex.session.director;
     d.drivers.forEach((e) => { if (e.flagLap != null) e.lap = e.flagLap + 1; });
   });
-  await page.waitForTimeout(1500);
+  await page.waitForFunction(
+    () => window.__apex.screens.current === 'results',
+    null, { timeout: 90000 }
+  );
+
   return page.evaluate(() => ({
     screen: window.__apex.screens.current,
     acts: [...document.querySelectorAll('[data-act]')].map((b) => b.dataset.act),
@@ -121,7 +135,14 @@ for (const step of expected) {
     results.acts.includes('next') && results.text.includes(`Up next: ${step.next}`));
 
   await page.click('[data-act="next"]');
-  await page.waitForTimeout(2500);
+  // The weekend advances its stage as soon as the session finishes, but the
+  // session for that stage is built a few frames later — so wait for the two
+  // to agree rather than for the stage alone.
+  await page.waitForFunction(
+    () => window.__apex.session?.director.sessionType ===
+          window.__apex.weekend?.stage.sessionType,
+    null, { timeout: 90000 }
+  );
 }
 
 const race = await page.evaluate(() => ({

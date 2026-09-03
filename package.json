@@ -15,7 +15,8 @@
     "test:browser": "node test/browser.smoke.mjs",
     "test:net": "node test/multiplayer.integration.mjs",
     "test:ui": "node test/ui.flow.mjs",
-    "test:modes": "node test/modes.flow.mjs"
+    "test:modes": "node test/modes.flow.mjs",
+    "profile": "node test/profile.mjs"
   },
   "dependencies": {
     "three": "^0.185.0",
