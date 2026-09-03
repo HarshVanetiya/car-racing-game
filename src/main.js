@@ -10,6 +10,7 @@ import { ScreenManager, saveSettings } from './ui/Screens.js';
 import { TrackModel } from './track/TrackModel.js';
 import { RaceSession } from './race/RaceSession.js';
 import { RacePhase, SessionType, DriverStatus } from './race/RaceDirector.js';
+import { Weekend, WEEKEND_STAGES } from './race/Weekend.js';
 import { SpeedProfile } from './ai/SpeedProfile.js';
 import { CARS, getCar, defaultSetup } from './cars/carDefs.js';
 import { ClientNet } from './net/ClientNet.js';
@@ -136,6 +137,7 @@ class Game {
       case 'menu:weekend': this._pendingMode = 'weekend'; this.screens.show('raceSetup', { mode: 'weekend' }); break;
       case 'menu:practice': this._pendingMode = 'practice'; this.screens.show('raceSetup', { mode: 'practice' }); break;
       case 'menu:timetrial': this._pendingMode = 'timetrial'; this.screens.show('raceSetup', { mode: 'timetrial' }); break;
+      case 'menu:qualifying': this._pendingMode = 'qualifying'; this.screens.show('raceSetup', { mode: 'qualifying' }); break;
       case 'menu:multiplayer': this._openMultiplayer(); break;
       case 'menu:settings': this._returnTo = 'menu'; this.screens.show('settings'); break;
       case 'menu:help': this._returnTo = 'menu'; this.screens.show('help'); break;
@@ -184,6 +186,23 @@ class Game {
       case 'pause:quit': this.quitToMenu(); break;
 
       case 'results:menu': this.quitToMenu(); break;
+      case 'results:next': {
+        // Carry on to the next session of the weekend.
+        this.screens.hide();
+        const settings = this.screens.state.settings;
+        this.screens.show('loading', { text: `Preparing ${this.weekend.stage.name}…` });
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          this._buildSession(this.weekend.stage.sessionType, settings);
+          this.hud.bigText(this.weekend.stage.name.toUpperCase(), 2.6);
+          this.screens.hide();
+          this.hud.show();
+          this.hud.reset();
+          this._seenEvents.clear();
+          this._finalLapAnnounced = false;
+          this.paused = false;
+        }));
+        break;
+      }
       case 'results:restart':
         if (this.multiplayer && this.net) this.net.returnToLobby();
         else { this.screens.hide(); this.startSinglePlayer(this.mode); }
@@ -209,16 +228,28 @@ class Game {
     this._closeMultiplayer();
 
     const s = this.screens.state.settings;
+    // A race weekend runs three sessions in sequence, with qualifying setting
+    // the grid for the race.
+    if (this.mode === 'weekend') {
+      this.weekend = new Weekend({ laps: s.laps });
+    } else {
+      this.weekend = null;
+    }
+
     const sessionType =
       this.mode === 'practice' ? SessionType.PRACTICE :
       this.mode === 'timetrial' ? SessionType.TIME_TRIAL :
-      this.mode === 'weekend' ? SessionType.RACE : SessionType.RACE;
+      this.mode === 'qualifying' ? SessionType.QUALIFYING :
+      this.weekend ? this.weekend.stage.sessionType : SessionType.RACE;
 
     this.screens.show('loading', { text: 'Preparing the circuit…' });
 
     // Build on the next frame so the loading screen paints first.
     requestAnimationFrame(() => requestAnimationFrame(() => {
       this._buildSession(sessionType, s);
+      if (this.weekend) {
+        this.hud.bigText(this.weekend.stage.name.toUpperCase(), 2.6);
+      }
       this.screens.hide();
       this.hud.show();
       this.hud.reset();
@@ -234,10 +265,12 @@ class Game {
     const soloModes = sessionType === SessionType.PRACTICE ||
                       sessionType === SessionType.TIME_TRIAL;
 
+    const weekendCfg = this.weekend ? this.weekend.sessionConfig() : null;
     this.session = new RaceSession({
       track: this.track,
       sessionType,
-      totalLaps: s.laps,
+      sessionDuration: weekendCfg ? weekendCfg.sessionDuration : 0,
+      totalLaps: weekendCfg ? weekendCfg.totalLaps : s.laps,
       weather: s.weather,
       dynamicWeather: s.dynamicWeather,
       collisions: s.collisions,
@@ -256,7 +289,7 @@ class Game {
       setup: this.screens.state.setup,
       isPlayer: true,
       assists: s.assists,
-      gridPosition: 1
+      gridPosition: this.weekend ? this.weekend.gridPositionFor(this.playerId, 1) : 1
     });
     this.playerEntry = playerEntry;
     this.playerVehicle = playerEntry.vehicle;
@@ -273,7 +306,9 @@ class Game {
         isAI: true,
         skill: s.aiSkill,
         colour: car.colour,
-        gridPosition: i + 2
+        gridPosition: this.weekend
+          ? this.weekend.gridPositionFor(`ai-${i}`, i + 2)
+          : i + 2
       });
     }
 
@@ -311,6 +346,11 @@ class Game {
 
     if (sessionType === SessionType.RACE) this.session.startRace(2.0);
     else this.session.startSession();
+    // Practice and qualifying begin on an out lap, so the first crossing does
+    // not record a nonsense time from a standing start.
+    if (sessionType !== SessionType.RACE) {
+      for (const e of this.session.director.drivers) e.timing.markOutLap();
+    }
 
     this.applySettings();
   }
@@ -478,6 +518,7 @@ class Game {
 
     if (!this.paused) {
       this._applyPlayerControls(controls, dt);
+      this._updateSpectator(controls);
       this.session.update(dt);
       if (this.multiplayer && this.net) {
         this.net.update(dt, this.playerVehicle);
@@ -574,12 +615,37 @@ class Game {
     this.renderer.focusShadows(cam.position);
   }
 
+  /**
+   * Spectator control. Once a driver has finished they can watch anyone still
+   * racing, which is also what a disconnected or retired driver gets.
+   */
+  _updateSpectator(controls) {
+    if (!this.spectating || !this.session) return;
+    if (!controls.shiftUp && !controls.shiftDown) return;
+    const running = this.session.director.drivers
+      .filter((e) => e.status !== DriverStatus.DNF)
+      .map((e) => e.id);
+    const remoteIds = this.multiplayer && this.net ? [...this.net.remoteCars.keys()] : [];
+    const all = [...new Set([...running, ...remoteIds])];
+    if (!all.length) return;
+    const i = all.indexOf(this.spectateTarget);
+    const dir = controls.shiftUp ? 1 : -1;
+    this.spectateTarget = all[(i + dir + all.length) % all.length];
+    const entry = this.session.director.get(this.spectateTarget);
+    this.hud.message(
+      `Watching ${entry?.name || this.netDrivers?.get(this.spectateTarget)?.name || '—'}`,
+      'info', 2
+    );
+  }
+
   _updateCamera(dt, controls) {
     const rig = this.renderer.cameraRig;
     if (!rig) return;
 
     let subject = this.playerVehicle;
     if (this.spectating && this.spectateTarget) {
+      const localEntry = this.session?.director.get(this.spectateTarget);
+      if (localEntry?.vehicle) subject = localEntry.vehicle;
       const remote = this.net?.remoteCars.get(this.spectateTarget);
       if (remote) {
         rig.update(dt, {
@@ -820,7 +886,11 @@ class Game {
           this.sounds.raceFinished(ev.position);
           this.hud.bigText(`P${ev.position}`, 3);
           this.spectating = true;
+          // Watch whoever is leading, and let the player switch with the
+          // shift keys.
+          this.spectateTarget = this.session?.director.order[0] || null;
           this.renderer.cameraRig?.setMode(CameraMode.TV);
+          this.hud.message('Spectating — shift keys change driver', 'info', 5);
         }
         break;
       case 'weatherChange':
@@ -839,7 +909,19 @@ class Game {
         this.hud.message(`${ev.name} retires`, 'warn', 3);
         break;
       case 'sessionFinished':
-        if (!this.multiplayer) this._showResults({ classification: ev.classification });
+        if (!this.multiplayer) {
+          if (this.weekend && !this.weekend.isLast) {
+            const next = this.weekend.completeStage(ev.classification);
+            this._showResults({
+              classification: ev.classification,
+              nextStage: next ? next.name : null,
+              nextStageDescription: next ? next.description : null
+            });
+          } else {
+            if (this.weekend) this.weekend.completeStage(ev.classification);
+            this._showResults({ classification: ev.classification });
+          }
+        }
         break;
       default: break;
     }
@@ -855,7 +937,9 @@ class Game {
       fastestLap: data.fastestLap ?? d?.records.fastestLap,
       fastestLapDriver: data.fastestLapDriver ?? d?.records.fastestLapDriver,
       theoreticalBest: data.theoreticalBest ?? d?.records.theoreticalBest,
-      multiplayer: this.multiplayer
+      multiplayer: this.multiplayer,
+      nextStage: data.nextStage,
+      nextStageDescription: data.nextStageDescription
     });
   }
 

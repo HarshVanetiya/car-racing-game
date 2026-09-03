@@ -87,6 +87,8 @@ export class ScreenManager extends EventTarget {
           <span class="sub">Free running to learn the circuit</span></button>
         <button class="big" data-act="timetrial">Time Trial
           <span class="sub">Empty track, one perfect lap</span></button>
+        <button class="big" data-act="qualifying">Qualifying
+          <span class="sub">Set a grid time against the clock</span></button>
         <button class="ghost" data-act="settings">Settings</button>
         <button class="ghost" data-act="help">Controls &amp; Help</button>
       </div>
@@ -104,10 +106,13 @@ export class ScreenManager extends EventTarget {
     const s = this.state.settings;
     const mode = data.mode || 'quick';
     const isRace = mode === 'quick' || mode === 'weekend';
+    // Qualifying has rivals on track but no lap count of its own.
+    const showOpponents = isRace || mode === 'qualifying';
     return `
       <h2 class="section">${
         mode === 'practice' ? 'Practice' :
         mode === 'timetrial' ? 'Time Trial' :
+        mode === 'qualifying' ? 'Qualifying' :
         mode === 'weekend' ? 'Race Weekend' : 'Quick Race'}</h2>
       <div class="grid cols-2" style="align-items:start">
         <div class="panel">
@@ -119,7 +124,8 @@ export class ScreenManager extends EventTarget {
               <span id="laps-val">${s.laps}</span> laps
               &middot; approx <span id="laps-time">${estimateRaceTime(s.laps)}</span>
             </div>
-          </label>
+          </label>` : ''}
+          ${showOpponents ? `
           <label class="field"><span>AI opponents</span>
             <input type="range" id="ai" min="0" max="19" value="${s.aiCount}">
             <div style="font-size:12px;color:var(--text-dim);margin-top:5px"><span id="ai-val">${s.aiCount}</span> cars</div>
@@ -443,11 +449,23 @@ export class ScreenManager extends EventTarget {
         ${data.theoreticalBest ? `<div>Theoretical best: <strong>${formatLapTime(data.theoreticalBest)}</strong></div>` : ''}
       </div>
 
+      ${data.nextStage ? `
+      <div class="panel" style="margin-top:16px;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+        <div style="flex:1 1 240px">
+          <div style="font-weight:700">Up next: ${escapeHtml(data.nextStage)}</div>
+          ${data.nextStageDescription
+            ? `<div style="font-size:12.5px;color:var(--text-dim);margin-top:3px">${escapeHtml(data.nextStageDescription)}</div>`
+            : ''}
+        </div>
+        <button class="primary" data-act="next">Continue to ${escapeHtml(data.nextStage)}</button>
+      </div>` : ''}
+
       <div class="row" style="margin-top:18px">
         <button data-act="menu">Main menu</button>
         <div class="spacer"></div>
         ${data.multiplayer ? '<button data-act="lobby">Back to lobby</button>' : ''}
-        <button class="primary" data-act="restart">Race again</button>
+        <button ${data.nextStage ? '' : 'class="primary" '}data-act="restart">
+          ${data.nextStage ? 'Restart weekend' : 'Race again'}</button>
       </div>`;
   }
 
