@@ -4,6 +4,12 @@ import { Tire } from './Tire.js';
 import { SurfaceType, getSurface, surfaceHeightOffset } from './Surfaces.js';
 
 /**
+ * Angular frequency of the wheel-hop mode (rad/s). Ground inputs faster than
+ * this are absorbed by tire deflection rather than moving the wheel.
+ */
+const WHEEL_HOP_OMEGA = 2 * Math.PI * 16;
+
+/**
  * ============================================================================
  *  WHEEL: suspension + rotational dynamics + slip
  * ============================================================================
@@ -107,6 +113,9 @@ export class Wheel {
     this.latSlipVelocity = 0;
     this.kerbImpact = 0;
     this.suspensionForce = 0;
+    /** Vertical input absorbed by the tire this step, for feel and audio. */
+    this.surfaceHarshness = 0;
+    this._groundY = null;
     this.antiRollForce = 0;
   }
 
@@ -133,10 +142,33 @@ export class Wheel {
     const hardpoint = body.localToWorldPoint(this.position, tmpVec());
     const up = body.up;
 
+    // --- Wheel-hop / tire enveloping filter --------------------------------
+    //
+    // A raycast wheel follows the ground exactly, which is wrong at speed. A
+    // real wheel and tire form a mass-spring system with a hop frequency around
+    // 15-20 Hz, and it simply cannot follow ground inputs faster than that —
+    // the tire carcass deflects instead of the wheel rising.
+    //
+    // Without this, kerb ribs launch the car: 40 mm ribs at 0.9 m spacing
+    // become an 50 Hz, 40 mm vertical input at racing speed, which no rigid
+    // follower survives. With it, kerbs shake and unsettle the car — which is
+    // what they are supposed to do — without throwing it into the air.
+    const rawGroundY = ground.point.y;
+    if (this._groundY == null || Math.abs(rawGroundY - this._groundY) > 1.5) {
+      // First sample, or the car has been moved: snap rather than sweep.
+      this._groundY = rawGroundY;
+    } else {
+      const a = 1 - Math.exp(-WHEEL_HOP_OMEGA * dt);
+      this._groundY += (rawGroundY - this._groundY) * a;
+    }
+    // What the tire absorbed rather than passed on — the harshness the driver
+    // feels through the car and hears through the tires.
+    this.surfaceHarshness = Math.abs(rawGroundY - this._groundY);
+
     // Signed height of the hardpoint above the local ground plane.
     const toGround = tmpVec().set(
       hardpoint.x - ground.point.x,
-      hardpoint.y - ground.point.y,
+      hardpoint.y - this._groundY,
       hardpoint.z - ground.point.z
     );
     const h = toGround.dot(ground.normal);
@@ -183,6 +215,9 @@ export class Wheel {
     if (overCompression > 0) {
       force += this.bumpStopRate * overCompression * overCompression * 40;
       this.kerbImpact = Math.max(this.kerbImpact, clamp01(overCompression / 0.02));
+    }
+    if (this.surfaceType === SurfaceType.KERB) {
+      this.kerbImpact = Math.max(this.kerbImpact, clamp01(this.surfaceHarshness / 0.018));
     }
 
     // --- Damper -------------------------------------------------------------
@@ -382,5 +417,6 @@ export class Wheel {
     this.brakeTorque = 0;
     this.antiRollForce = 0;
     this.kerbImpact = 0;
+    this._groundY = null;
   }
 }

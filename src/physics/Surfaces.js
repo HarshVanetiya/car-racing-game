@@ -41,8 +41,8 @@ export const SURFACES = {
     heatFactor: 1.3,
     // Sawtooth kerbing: large amplitude, high spatial frequency. This is what
     // physically launches the wheel and unsettles the car.
-    bumpAmplitude: 0.038,
-    bumpFrequency: 1.55,
+    bumpAmplitude: 0.034,
+    bumpFrequency: 1.10,
     dragFactor: 0.0,
     dirtPickup: 0.0,
     audio: 'kerb'

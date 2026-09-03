@@ -75,9 +75,15 @@ export class TrackModel {
 
     // The turtle walk. Heading 0 points along +Z; positive angles turn right,
     // matching the clockwise direction of the circuit.
+    // Control points are laid down at a roughly uniform arc length everywhere.
+    // Mixing 25 m spacing on the straights with 2 m spacing round the hairpin
+    // makes a Catmull-Rom spline overshoot badly at the transitions — enough to
+    // put a spurious 3 m radius in the middle of a 21 m corner.
+    const CONTROL_SPACING = 6.0;
+
     for (const seg of this.circuit.LAYOUT) {
       if (seg.t === 's') {
-        const n = Math.max(2, Math.round(seg.len / 25));
+        const n = Math.max(2, Math.round(seg.len / CONTROL_SPACING));
         for (let i = 1; i <= n; i++) {
           const d = seg.len / n;
           x += Math.sin(hdg) * d;
@@ -86,7 +92,8 @@ export class TrackModel {
         }
       } else {
         const rad = seg.deg * Math.PI / 180;
-        const n = Math.max(4, Math.round(Math.abs(seg.deg) / 7));
+        const arcLen = Math.abs(rad) * seg.r;
+        const n = Math.max(4, Math.round(arcLen / CONTROL_SPACING));
         for (let i = 1; i <= n; i++) {
           const dA = rad / n;
           const chord = 2 * seg.r * Math.sin(Math.abs(dA) / 2);
@@ -153,6 +160,35 @@ export class TrackModel {
       // inside of the corner is at positive lateral offset. The raw spline
       // curvature uses the opposite convention.
       this.curvature[i] = -flat.curvatureAtDistance(d, 4);
+    }
+
+    // Banking is authored as a magnitude; give it the sign that raises the
+    // OUTSIDE of each corner. Without this every right-hander ends up banked
+    // the wrong way, tipping the car toward the outside exactly where it is
+    // already loaded hardest.
+    //
+    // The sign has to come in SMOOTHLY. Using Math.sign() flips it abruptly
+    // wherever curvature crosses zero — and on a straight, curvature hovers
+    // around zero and flickers — which turns a 3-degree cross-slope into a
+    // washboard that throws the car off the road. tanh ramps the banking in
+    // with the corner and fades it to nothing on the straights.
+    for (let i = 0; i < count; i++) {
+      this.banking[i] = Math.abs(this.banking[i]) * -Math.tanh(this.curvature[i] * 220);
+    }
+    // Smooth over ~24 m so banking transitions are gradual, as they are when a
+    // circuit is actually built.
+    {
+      const radius = Math.max(1, Math.round(24 / this.sampleSpacing));
+      const src = Float32Array.from(this.banking);
+      for (let i = 0; i < count; i++) {
+        let sum = 0, w = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const j = (i + k + count) % count;
+          const ww = 1 - Math.abs(k) / (radius + 1);
+          sum += src[j] * ww; w += ww;
+        }
+        this.banking[i] = sum / w;
+      }
     }
 
     // Longitudinal gradient, from the elevation of neighbouring samples.
@@ -403,25 +439,67 @@ export class TrackModel {
    */
   _buildRacingLines() {
     const n = this.sampleCount;
+    const ds = this.sampleSpacing;
     const raw = new Float32Array(n);
 
-    // Look ahead and behind to decide where the apex of each corner is.
-    const look = Math.round(38 / this.sampleSpacing);
-    for (let i = 0; i < n; i++) {
-      let sum = 0, weight = 0;
-      for (let k = -look; k <= look; k++) {
-        const j = (i + k + n) % n;
-        // Weight the window so the apex dominates and entry/exit taper.
-        const w = 1 - Math.abs(k) / (look + 1);
-        sum += this.curvature[j] * w;
-        weight += w;
+    // Box average of the centreline curvature over +/- `radius` samples.
+    const avgCurv = (radius) => {
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        let sum = 0, w = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const j = (i + k + n) % n;
+          const ww = 1 - Math.abs(k) / (radius + 1);
+          sum += this.curvature[j] * ww; w += ww;
+        }
+        out[i] = sum / w;
       }
-      const avg = weight > 0 ? sum / weight : 0;
-      // Positive curvature = turning right, so the line moves to the inside
-      // (right, positive lateral) at the apex.
-      const half = this.width[i] * 0.5;
-      const usable = half - 1.6;   // keep the car's width on the road
-      raw[i] = clamp(avg * 260, -1, 1) * usable;
+      return out;
+    };
+
+    // The line is built from the DIFFERENCE between a narrow and a wide average
+    // of curvature.
+    //
+    // At the apex the local curvature is at its highest and exceeds the corner's
+    // broader average, so the difference is positive and the line goes to the
+    // inside. On the approach and on the exit the local curvature is still near
+    // zero while the wide average already sees the corner, so the difference is
+    // negative and the line goes to the outside. That produces the classic
+    // outside-inside-outside line for free.
+    //
+    // A single smoothed curvature — which is what an average alone gives —
+    // cannot do this: it puts the car on the INSIDE the whole way through,
+    // which makes the line's radius tighter than the centreline's and the
+    // corner harder rather than easier.
+    const narrow = avgCurv(Math.max(2, Math.round(22 / ds)));
+    const wide = avgCurv(Math.max(4, Math.round(140 / ds)));
+
+    const diff = new Float32Array(n);
+    for (let i = 0; i < n; i++) diff[i] = narrow[i] - wide[i];
+
+    // Normalise the amplitude LOCALLY rather than globally. A driver uses the
+    // full width of the road in every corner, tight or fast; scaling the whole
+    // circuit by its single sharpest corner would leave every other corner
+    // barely using the road at all.
+    const magRadius = Math.max(4, Math.round(160 / ds));
+    const localMag = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let peak = 0;
+      for (let k = -magRadius; k <= magRadius; k++) {
+        const j = (i + k + n) % n;
+        const a = Math.abs(diff[j]);
+        if (a > peak) peak = a;
+      }
+      localMag[i] = peak;
+    }
+
+    for (let i = 0; i < n; i++) {
+      const usable = this.width[i] * 0.5 - 1.9;   // keep the car's width on the road
+      // Below this the road is effectively straight and the line stays central.
+      const STRAIGHT_FLOOR = 0.0016;
+      const mag = Math.max(localMag[i], STRAIGHT_FLOOR);
+      const commit = clamp01((localMag[i] - STRAIGHT_FLOOR * 0.5) / (STRAIGHT_FLOOR * 2));
+      raw[i] = clamp(diff[i] / mag, -1, 1) * usable * commit;
     }
 
     // Two smoothing passes: a racing line has to be continuous in curvature,
@@ -517,6 +595,22 @@ export class TrackModel {
     const s = this._sampleAtDistance(d);
     const bankRise = Math.tan(s.banking) * lateral;
     return out.set(s.x + s.lx * lateral, s.y + bankRise, s.z + s.lz * lateral);
+  }
+
+  /**
+   * Heading of a racing line at a distance: the circuit's own heading plus the
+   * angle contributed by the line moving across the track.
+   */
+  lineHeadingAt(d, line = 'racing', h = 6) {
+    const a = this.lineOffsetAt(d - h, line);
+    const b = this.lineOffsetAt(d + h, line);
+    return this.headingAtDistance(d) + Math.atan2(b - a, 2 * h);
+  }
+
+  /** Unit vector pointing to the right of the direction of travel. */
+  lateralDirAt(d, out = new Vec3()) {
+    const s = this._sampleAtDistance(d);
+    return out.set(s.lx, 0, s.lz);
   }
 
   headingAtDistance(d) {
