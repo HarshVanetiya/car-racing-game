@@ -426,12 +426,18 @@ export class TrackBuilder {
       marker.position.y += 0.02;
       this.group.add(marker);
 
+      // Garages sit on the far side of the pit lane, AWAY from the circuit.
+      // The lateral direction here points toward the racing surface, so the
+      // offset must follow the sign of the pit lane's own offset — otherwise
+      // the buildings end up a few metres from the track, in the driver's view
+      // and in the way.
       const garage = new THREE.Mesh(new THREE.BoxGeometry(4.6, 4.4, 7.5), buildingMat);
       garage.position.copy(box.position);
       garage.position.y += 2.2;
       const nx = Math.cos(box.heading), nz = -Math.sin(box.heading);
-      garage.position.x += nx * 8.5;
-      garage.position.z += nz * 8.5;
+      const away = Math.sign(pit.offset || -1) * 9.0;
+      garage.position.x += nx * away;
+      garage.position.z += nz * away;
       garage.rotation.y = box.heading;
       garage.castShadow = true;
       this.group.add(garage);
@@ -524,7 +530,7 @@ export class TrackBuilder {
       for (const side of [-1, 1]) {
         const d = f * t.length;
         const i = Math.floor(d / t.sampleSpacing) % t.sampleCount;
-        const off = (side > 0 ? t.barrierOffsetR[i] : t.barrierOffsetL[i]) + 16;
+        const off = (side > 0 ? t.barrierOffsetR[i] : t.barrierOffsetL[i]) + 24;
         const p = this._pointAt(i, side * off, 0);
         const heading = Math.atan2(t.tx[i], t.tz[i]);
 
@@ -621,7 +627,7 @@ export class TrackBuilder {
       new THREE.BoxGeometry(28, 9, 14),
       new THREE.MeshStandardMaterial({ color: 0x4c515a, roughness: 0.8 })
     );
-    const bp = this.track.pointAt(t.pit.exitDistance + 60, t.pit.offset - 22);
+    const bp = this.track.pointAt(t.pit.exitDistance + 60, t.pit.offset + Math.sign(t.pit.offset || -1) * 24);
     pitBuilding.position.set(bp.x, bp.y + 4.5, bp.z);
     pitBuilding.rotation.y = this.track.headingAtDistance(t.pit.exitDistance + 60);
     pitBuilding.castShadow = true;

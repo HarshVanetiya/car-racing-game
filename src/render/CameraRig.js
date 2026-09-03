@@ -130,8 +130,8 @@ export class CameraRig {
     switch (this.mode) {
       case CameraMode.CHASE: {
         // Distance and height open up with speed so the car stays readable.
-        const back = lerp(6.4, 8.6, speedT);
-        const height = lerp(2.3, 2.9, speedT);
+        const back = lerp(7.4, 9.8, speedT);
+        const height = lerp(2.5, 3.2, speedT);
         desiredPos.copy(car)
           .addScaledVector(forward, -back)
           .addScaledVector(up, height);
@@ -213,7 +213,10 @@ export class CameraRig {
           // Prefer a camera 40-140 m away that the car is coming toward.
           const toCar = new THREE.Vector3().subVectors(car, cam.position).normalize();
           const approaching = -toCar.dot(forward);
-          const score = -Math.abs(dist - 80) * 0.02 + approaching * 2;
+          // Distance has to matter more than direction, or a camera hundreds
+          // of metres away wins simply because the car is pointed at it.
+          if (dist > 260) continue;
+          const score = -Math.abs(dist - 70) * 0.045 + approaching * 1.2;
           if (score > bestScore) { bestScore = score; best = k; }
         }
         if (best !== this._tvIndex && this._tvSwitchCooldown <= 0) {
@@ -226,7 +229,7 @@ export class CameraRig {
         desiredLook.copy(car);
         // Zoom in on a distant car, as a broadcast camera would.
         const dist = cam.position.distanceTo(car);
-        desiredFov = clamp(lerp(50, 16, clamp01((dist - 30) / 180)), 14, 55);
+        desiredFov = clamp(lerp(42, 11, clamp01((dist - 25) / 150)), 10, 46);
         posRate = 100;   // the camera itself does not move
         lookRate = 8;
         break;

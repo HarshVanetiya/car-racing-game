@@ -19,9 +19,9 @@ import { clamp, clamp01, lerp, damp } from '../math/MathUtils.js';
 
 /** Sky and lighting presets keyed to the weather. */
 const SKY = {
-  clear: { top: 0x5a8fd0, bottom: 0xbcd4ea, sun: 0xfff4e0, sunIntensity: 2.5, ambient: 0x88a0c0, ambientIntensity: 1.1, fog: 0xb8cee2, fogDensity: 0.00035 },
-  overcast: { top: 0x7d8592, bottom: 0xa8b0bb, sun: 0xd8dce2, sunIntensity: 1.0, ambient: 0x8d95a2, ambientIntensity: 1.5, fog: 0x9aa3ae, fogDensity: 0.0011 },
-  storm: { top: 0x424852, bottom: 0x646c78, sun: 0xa8adb6, sunIntensity: 0.55, ambient: 0x5c636e, ambientIntensity: 1.7, fog: 0x666e79, fogDensity: 0.0026 }
+  clear: { top: 0x5a8fd0, bottom: 0xbcd4ea, sun: 0xfff4e0, sunIntensity: 2.2, ambient: 0x9db4cc, ambientIntensity: 1.9, fog: 0xb8cee2, fogDensity: 0.00035 },
+  overcast: { top: 0x7d8592, bottom: 0xa8b0bb, sun: 0xd8dce2, sunIntensity: 1.0, ambient: 0x9aa4b2, ambientIntensity: 2.2, fog: 0x9aa3ae, fogDensity: 0.0011 },
+  storm: { top: 0x424852, bottom: 0x646c78, sun: 0xa8adb6, sunIntensity: 0.55, ambient: 0x6b737e, ambientIntensity: 2.4, fog: 0x666e79, fogDensity: 0.0026 }
 };
 
 export class Renderer {
@@ -40,7 +40,7 @@ export class Renderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = this.quality !== 'low';
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.25, 6000);
@@ -130,7 +130,7 @@ export class Renderer {
     this.scene.add(this.sun.target);
 
     this.ambient = new THREE.HemisphereLight(
-      SKY.clear.ambient, 0x3a4030, SKY.clear.ambientIntensity
+      SKY.clear.ambient, 0x5a6350, SKY.clear.ambientIntensity
     );
     this.scene.add(this.ambient);
   }
@@ -148,7 +148,8 @@ export class Renderer {
     this.trackBuilder = new TrackBuilder(track, { quality: this.quality });
     this.scene.add(this.trackBuilder.build());
     this.cameraRig = new CameraRig(this.camera, track);
-    this._buildRacingLineGuide(track);
+    // The racing-line guide needs a speed profile for the player's actual car,
+    // so it is built later by `buildRacingLineGuide` once that car exists.
     return this.trackBuilder;
   }
 
@@ -249,9 +250,34 @@ export class Renderer {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({
-      color: 0xc8d6e4, size: 0.10, transparent: true, opacity: 0.5,
-      depthWrite: false, sizeAttenuation: true
+    // A soft, vertically stretched sprite. Plain points render as hard squares,
+    // and with size attenuation the ones near the camera become huge blocks.
+    // This fades them out both at the edges and when very close.
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      uniforms: { uOpacity: { value: 0.5 }, uSize: { value: 26.0 } },
+      vertexShader: `
+        uniform float uSize;
+        varying float vFade;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float d = -mv.z;
+          gl_PointSize = clamp(uSize / max(1.0, d) * 8.0, 1.0, 9.0);
+          // Drops right on the lens are distracting; fade the nearest away.
+          vFade = smoothstep(1.5, 6.0, d) * (1.0 - smoothstep(50.0, 85.0, d));
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform float uOpacity;
+        varying float vFade;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          // Stretch vertically into a streak.
+          float r = length(vec2(c.x * 2.6, c.y));
+          if (r > 0.5) discard;
+          gl_FragColor = vec4(0.78, 0.85, 0.93,
+                              (1.0 - r * 2.0) * uOpacity * vFade);
+        }`
     });
     this._rainGroup = new THREE.Points(geo, mat);
     this._rainGroup.frustumCulled = false;
@@ -302,8 +328,8 @@ export class Renderer {
     if (rain > 0.02) {
       this._ensureRain();
       this._rainGroup.visible = true;
-      this._rainGroup.material.opacity = 0.25 + rain * 0.45;
-      this._rainGroup.material.size = 0.07 + rain * 0.10;
+      this._rainGroup.material.uniforms.uOpacity.value = 0.22 + rain * 0.34;
+      this._rainGroup.material.uniforms.uSize.value = 18 + rain * 16;
       const pos = this._rainGroup.geometry.attributes.position;
       const fall = (16 + rain * 22) * dt;
       const drift = (weather.wind?.x || 0) * dt;
