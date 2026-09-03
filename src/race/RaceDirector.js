@@ -139,6 +139,7 @@ export class DriverEntry {
     // Finish
     this.finished = false;
     this.finishTime = null;
+    this.flagLap = null;        // lap they were on when a timed session ended
     this.classified = false;
     this.totalRaceTime = 0;
 
@@ -176,6 +177,7 @@ export class RaceDirector {
     this.weather = opts.weather || null;
 
     this.phase = RacePhase.GRID;
+    this.checkeredTime = 0;
     this.time = 0;              // session clock
     this.raceTime = 0;          // time since the lights went out
     this.entries = new Map();
@@ -804,14 +806,31 @@ export class RaceDirector {
       if (this.sessionDuration > 0 && this.raceTime >= this.sessionDuration &&
           this.phase === RacePhase.RACING) {
         this.phase = RacePhase.CHECKERED;
+        // Everyone on track gets to complete the lap they are on, so record
+        // which lap that is for each of them.
+        for (const e of this.drivers) e.flagLap = e.lap;
+        this.checkeredTime = this.raceTime;
         this.events.push({ type: 'sessionEnding' });
       }
       if (this.phase === RacePhase.CHECKERED) {
-        // Everyone gets to complete the lap they are on.
+        for (const e of this.drivers) {
+          if (e.status !== DriverStatus.RUNNING && e.status !== DriverStatus.PIT_LANE) continue;
+          // A driver is done once they cross the line again.
+          if (e.lap > (e.flagLap ?? e.lap)) {
+            e.status = DriverStatus.FINISHED;
+            e.finished = true;
+            e.finishTime = this.raceTime;
+            e.totalRaceTime = this.raceTime + e.penaltySeconds;
+            e.classified = e.timing.bestLap != null;
+            e.events.push({ type: 'finished', position: this.order.indexOf(e.id) + 1 });
+          }
+        }
         const stillRunning = this.drivers.some(
           (e) => e.status === DriverStatus.RUNNING || e.status === DriverStatus.PIT_LANE
         );
-        if (!stillRunning) this._finishSession();
+        // A car beached in the gravel must not hold the session open forever.
+        const graceExpired = this.raceTime > (this.checkeredTime ?? 0) + 210;
+        if (!stillRunning || graceExpired) this._finishSession();
       }
       return;
     }

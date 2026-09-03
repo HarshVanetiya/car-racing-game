@@ -147,6 +147,7 @@ generated at runtime.
 npm test              # 99 unit tests: physics, track, race, net, AI
 npm run test:browser  # loads the built game, drives it, checks WebGL/HUD/cameras
 npm run test:ui       # walks the menu, setup and results screens
+npm run test:modes    # starts every mode, then runs a weekend end to end
 npm run test:net      # two real clients against the race server
 ```
 

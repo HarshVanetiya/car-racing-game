@@ -9,6 +9,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { DriverTiming, SessionRecords } from '../src/race/Timing.js';
+import { RaceDirector, SessionType as ST, RacePhase, DriverStatus } from '../src/race/RaceDirector.js';
+import { TrackModel } from '../src/track/TrackModel.js';
 import { Weekend, WEEKEND_STAGES, WeekendStage } from '../src/race/Weekend.js';
 import { SessionType } from '../src/race/RaceDirector.js';
 
@@ -197,5 +199,63 @@ describe('race weekend', () => {
       assert.ok(Object.values(SessionType).includes(stage.sessionType),
         `${stage.key} has an unknown session type`);
     }
+  });
+});
+
+describe('timed sessions', () => {
+  const track = new TrackModel();
+
+  /** A director with two drivers, running a qualifying session on the clock. */
+  function makeSession(duration = 60) {
+    const d = new RaceDirector(track, {
+      sessionType: ST.QUALIFYING, sessionDuration: duration, totalLaps: 999
+    });
+    for (const id of ['a', 'b']) {
+      d.addDriver(id, { name: id.toUpperCase(), vehicle: null, gridPosition: 1 });
+    }
+    d.formGrid();
+    d.startImmediately();
+    return d;
+  }
+
+  test('the clock brings out the flag, and the session ends once everyone is in', () => {
+    const d = makeSession(20);
+    const step = 0.05;
+
+    // Run past the clock without touching the drivers.
+    for (let t = 0; t < 25; t += step) d.update(step);
+    assert.equal(d.phase, RacePhase.CHECKERED, 'the flag should be out on time');
+    assert.ok(d.drivers.every((e) => e.flagLap != null),
+      'each driver should be given the lap they are on to finish');
+    assert.notEqual(d.phase, RacePhase.FINISHED, 'nobody has crossed the line yet');
+
+    // Now let them each complete their lap.
+    for (const e of d.drivers) { e.lap = e.flagLap + 1; e.timing.bestLap = 84.2; }
+    d.update(step);
+
+    assert.ok(d.drivers.every((e) => e.status === DriverStatus.FINISHED),
+      'crossing the line after the flag should end that driver\'s session');
+    assert.ok(d.drivers.every((e) => e.classified), 'a driver with a lap time is classified');
+  });
+
+  test('a car stranded on track cannot hold the session open forever', () => {
+    const d = makeSession(20);
+    const step = 0.25;
+    for (let t = 0; t < 20 + 220; t += step) d.update(step);
+    assert.ok(d.drivers.some((e) => e.status !== DriverStatus.RUNNING) ||
+              d.phase !== RacePhase.CHECKERED,
+      'the session should have closed itself out');
+  });
+
+  test('a driver who never set a lap is not classified', () => {
+    const d = makeSession(20);
+    const step = 0.05;
+    for (let t = 0; t < 25; t += step) d.update(step);
+    const [first, second] = d.drivers;
+    first.lap = first.flagLap + 1; first.timing.bestLap = 83.9;
+    second.lap = second.flagLap + 1;                    // out on track, no time set
+    d.update(step);
+    assert.equal(first.classified, true);
+    assert.equal(second.classified, false, 'no lap time means no classification');
   });
 });

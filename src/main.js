@@ -266,11 +266,16 @@ class Game {
                       sessionType === SessionType.TIME_TRIAL;
 
     const weekendCfg = this.weekend ? this.weekend.sessionConfig() : null;
+    // A standalone qualifying session still needs a clock: without one it
+    // could never end, and the whole point of qualifying is the result.
+    // Practice and time trial deliberately run until the player leaves.
+    const soloDuration = sessionType === SessionType.QUALIFYING ? 480 : 0;
     this.session = new RaceSession({
       track: this.track,
       sessionType,
-      sessionDuration: weekendCfg ? weekendCfg.sessionDuration : 0,
-      totalLaps: weekendCfg ? weekendCfg.totalLaps : s.laps,
+      sessionDuration: weekendCfg ? weekendCfg.sessionDuration : soloDuration,
+      totalLaps: weekendCfg ? weekendCfg.totalLaps
+                 : (sessionType === SessionType.RACE ? s.laps : 999),
       weather: s.weather,
       dynamicWeather: s.dynamicWeather,
       collisions: s.collisions,
