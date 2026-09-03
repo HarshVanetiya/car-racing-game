@@ -1,0 +1,20 @@
+# Render blueprint for the authoritative race server.
+#
+# The server also serves the built client, so this one service is a complete
+# deployment on its own: visit it and you can play. Hosting the client on
+# GitHub Pages as well is still worth it, because a free Render service sleeps
+# after fifteen minutes idle and takes half a minute to wake — fine for joining
+# a race, poor for loading a game.
+services:
+  - type: web
+    name: apex-circuit
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      # Render supplies PORT; the server reads it.
+      - key: NODE_VERSION
+        value: 20

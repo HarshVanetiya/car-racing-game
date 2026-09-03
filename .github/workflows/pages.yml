@@ -1,0 +1,67 @@
+# Build the game and publish it to GitHub Pages.
+#
+# Single player needs nothing but these static files, so this alone is a
+# complete, playable deployment. Multiplayer additionally needs the race server
+# running somewhere — see DEPLOY.md — and the address of that server is baked
+# in here through the APEX_SERVER_URL repository variable. Leave it unset and
+# the game still works; the multiplayer screen simply has nothing to connect to.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    # This repository's default branch is the feature branch; `main` is listed
+    # too so the workflow keeps working after a merge or a rename.
+    branches:
+      - main
+      - claude/3d-multiplayer-formula-racing-wv3mtn
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; finish the one in flight, then run the newest.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Physics, track, race, networking and AI. Fast, and worth knowing about
+      # before a broken build reaches the published game.
+      - run: npm test
+
+      - name: Build
+        env:
+          # A project site is served from /<repo>/, so the bundle has to know.
+          APEX_BASE: /${{ github.event.repository.name }}/
+          VITE_SERVER_URL: ${{ vars.APEX_SERVER_URL }}
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

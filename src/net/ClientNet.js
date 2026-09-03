@@ -267,8 +267,34 @@ export class ClientNet extends EventTarget {
   }
 }
 
+/**
+ * Where the race server lives.
+ *
+ * By default it is the same origin the game was served from, which is what
+ * happens in development and when one process serves both the client and the
+ * server. When the client is hosted separately — on GitHub Pages, say — set
+ * `VITE_SERVER_URL` at build time to point at the race server.
+ *
+ * A page served over HTTPS may only open a secure socket, so an `ws://` server
+ * URL is upgraded rather than silently failing in the browser.
+ */
 function defaultUrl() {
+  const configured = import.meta.env?.VITE_SERVER_URL;
+  if (configured) return normaliseServerUrl(configured);
   if (typeof location === 'undefined') return 'ws://localhost:8787/ws';
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/ws`;
+}
+
+export function normaliseServerUrl(url) {
+  let out = String(url).trim().replace(/\/+$/, '');
+  // Accept an https:// or bare host form and turn it into a socket URL.
+  out = out.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+  if (!/^wss?:\/\//.test(out)) out = `wss://${out}`;
+  // A page on HTTPS cannot open an insecure socket.
+  if (typeof location !== 'undefined' && location.protocol === 'https:') {
+    out = out.replace(/^ws:\/\//, 'wss://');
+  }
+  if (!out.endsWith('/ws')) out += '/ws';
+  return out;
 }

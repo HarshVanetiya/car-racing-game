@@ -21,7 +21,9 @@ import { normaliseForMerge } from './mergeStatic.js';
  * the suspension, so `CarModel` builds those itself.
  */
 
-const MODEL_URL = 'models/car.glb';
+// Resolved against the deployed base path, so the model is found whether the
+// game is served from the root or from a project subpath.
+const MODEL_URL = `${import.meta.env?.BASE_URL ?? '/'}models/car.glb`;
 
 /**
  * The model is authored in centimetres with a 158.4-unit wheelbase. Scaling by

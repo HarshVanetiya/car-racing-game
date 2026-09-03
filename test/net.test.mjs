@@ -13,6 +13,7 @@ import {
   LOBBY_DEFAULTS, MsgType, PROTOCOL_VERSION
 } from '../src/net/protocol.js';
 import { RemoteCarState, ClockSync } from '../src/net/Interpolator.js';
+import { normaliseServerUrl } from '../src/net/ClientNet.js';
 
 const carState = (over = {}) => ({
   p: [0, 0.3, 0], q: [0, 0, 0, 1], v: [0, 0, 60], w: [0, 0, 0], ...over
@@ -178,5 +179,45 @@ describe('clock sync', () => {
     const t = c.now();
     assert.ok(Math.abs(t - (Date.now() + 5000) / 1000) < 0.2,
       'now() should report the server clock in seconds');
+  });
+});
+
+describe('the configured race server address', () => {
+  test('an https host becomes a secure socket address', () => {
+    assert.equal(normaliseServerUrl('https://apex.onrender.com'),
+                 'wss://apex.onrender.com/ws');
+    assert.equal(normaliseServerUrl('https://apex.onrender.com/'),
+                 'wss://apex.onrender.com/ws');
+  });
+
+  test('a bare host is assumed to be secure', () => {
+    assert.equal(normaliseServerUrl('apex.onrender.com'), 'wss://apex.onrender.com/ws');
+  });
+
+  test('an address that already names the socket path is left alone', () => {
+    assert.equal(normaliseServerUrl('wss://apex.onrender.com/ws'),
+                 'wss://apex.onrender.com/ws');
+  });
+
+  test('a plain ws address is kept when the page is not secure', () => {
+    // Without a `location`, nothing forces an upgrade.
+    assert.equal(normaliseServerUrl('ws://192.168.1.20:8787'),
+                 'ws://192.168.1.20:8787/ws');
+  });
+
+  test('a page served over https can only open a secure socket', () => {
+    const original = globalThis.location;
+    globalThis.location = { protocol: 'https:', host: 'example.github.io' };
+    try {
+      // An insecure address would be blocked by the browser, so it is upgraded
+      // rather than left to fail at connect time.
+      assert.equal(normaliseServerUrl('http://apex.onrender.com'),
+                   'wss://apex.onrender.com/ws');
+      assert.equal(normaliseServerUrl('ws://apex.onrender.com'),
+                   'wss://apex.onrender.com/ws');
+    } finally {
+      if (original === undefined) delete globalThis.location;
+      else globalThis.location = original;
+    }
   });
 });

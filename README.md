@@ -188,6 +188,15 @@ simulation: the server is authoritative and simulates every car itself. That is
 about 14% of a core for a 20-car grid, so it is not usually what makes a game
 stutter — but it is a whole core's worth of headroom you no longer have.
 
+## Deploying it
+
+Single player is a folder of static files and needs no backend at all, so the
+client and the race server deploy separately. `DEPLOY.md` has the full guide;
+the short version is GitHub Pages for the client (free, no account beyond the
+one you have, workflow already in the repo) and a Node host that allows
+WebSockets for the server. `npm start` serves both halves from one process if
+you would rather run it as a single service.
+
 ## Controls
 
 WASD or the arrow keys for the pedals and the wheel, E and Q (or the shift
