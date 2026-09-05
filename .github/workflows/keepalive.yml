@@ -1,0 +1,53 @@
+# Keep a free-tier race server awake.
+#
+# A free Render service sleeps after 15 minutes with no traffic and takes
+# 30-60 seconds to wake, which the first person to open a lobby pays for. A
+# request every ten minutes prevents that.
+#
+# This is inert until you opt in: set the repository variable
+# APEX_KEEPALIVE_URL to your server's address and it starts working. Leave it
+# unset and every run exits immediately.
+#
+# Two things worth knowing before you turn it on:
+#
+#   * Render's free tier allows 750 instance-hours a month and a month is
+#     about 730 hours, so ONE always-awake service fits inside the quota. Two
+#     would not.
+#   * Keeping a free instance permanently awake is not obviously what the free
+#     tier is for. It is within the published quota, but if Render's terms say
+#     otherwise, theirs is the answer that counts. Turning this off is one
+#     click on the variable.
+name: Keep the race server awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+# Never stack pings if a run is slow.
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the health endpoint
+        env:
+          URL: ${{ vars.APEX_KEEPALIVE_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "APEX_KEEPALIVE_URL is not set — nothing to keep awake."
+            exit 0
+          fi
+          # A sleeping instance can take the better part of a minute to answer,
+          # so allow for that rather than reporting a false failure.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 \
+                 "${URL%/}/health" || echo 000)
+          echo "GET ${URL%/}/health -> $code"
+          case "$code" in
+            2*) echo "Server is awake." ;;
+            000) echo "::warning::No response within 90s — the server may be down." ;;
+            *) echo "::warning::Unexpected status $code." ;;
+          esac

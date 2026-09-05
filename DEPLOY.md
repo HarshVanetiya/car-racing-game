@@ -93,57 +93,102 @@ The client converts that to a `wss://` socket address itself. A page served
 over HTTPS may only open a secure socket, which Render provides — this is why
 a plain IP address or a bare `http://` host will not work.
 
-### What the free tier costs you
-
-A free Render service **sleeps after 15 minutes with no traffic** and takes
-30–60 seconds to wake. For multiplayer that means the first person to open the
-lobby waits; everyone after them does not. It is fine for testing and for
-playing with friends, and it is the reason to keep the client on Pages: the
-game itself always loads instantly.
+The free tier's one real limit — the service sleeping — has its own section
+below, along with two ways around it.
 
 ---
 
-## What about the Student Pack?
+## The free tier sleeping, and what to do about it
 
-You do not need it for any of the above, and that is deliberate — spending a
-one-off credit on something two free tiers already do is a waste of the credit.
+A free Render service sleeps after 15 minutes idle. Worth being precise about
+what that actually costs, because it is smaller than it sounds: **the client is
+on GitHub Pages and never sleeps**, so the game always loads instantly. Only
+the multiplayer lobby waits, and only for the first person to open it — 30 to
+60 seconds, once, after which everyone else joins normally.
 
-Keep it for the problem the free tier actually has: **the server sleeping.**
-When you want an always-on server with no cold start, the pack's best fit is:
+If that is still annoying, there are two answers.
 
-**Azure for Students — $100 credit, no card at signup**, verified with your
-college email or student ID. An App Service on the B1 plan (~$13/month) runs
-this server continuously and supports WebSockets, so the credit is roughly
-seven months of always-on multiplayer.
+**Free: keep it awake.** `.github/workflows/keepalive.yml` pings the server
+every ten minutes. It does nothing until you set the repository variable
+`APEX_KEEPALIVE_URL` to your server's address (Settings → Secrets and variables
+→ Actions → Variables). Render's free tier allows 750 instance-hours a month
+and a month is about 730 hours, so one permanently-awake service fits inside
+the quota — though whether that is what the free tier is *for* is Render's call,
+not mine, and unsetting the variable turns it off.
+
+**Paid from student credit: Azure.** See below.
+
+## The Student Pack, checked offer by offer
+
+I checked these rather than trusting a list, and several widely-circulated ones
+are out of date. Against the two things that matter here — **no card**, and
+**can host a long-lived WebSocket process** — almost everything falls away:
+
+| Offer | Card needed? | Usable for this server? |
+|---|---|---|
+| **Azure for Students** — $100, 12 months | **No** | **Yes** — the only offer that clears both bars |
+| Heroku — $13/month credit | **Yes** | Would be ideal otherwise; the card rules it out |
+| DigitalOcean — $200 | — | **Programme ended 1 August 2026**; credits expired |
+| AWS Educate — $100 | No | No — a sandbox whose sessions expire after ~3 hours |
+| Google Cloud — $300 + always-free e2-micro | **Yes** | The always-free VM would be perfect, but signup needs a card |
+| Oracle Cloud — always-free VMs | **Yes** | Generous, and still needs a card for identity checks |
+| IBM Cloud — Lite tier | Card hold | Serverless, scales to zero; ~100k vCPU-seconds a month is about 4% of always-on |
+| Vercel / Netlify | No | No — serverless request handlers, not long-lived sockets |
+
+Two corrections to the list you were looking at: **Heroku's "free Hobby Dyno"
+no longer exists** — the offer is $13/month in credits and requires a card on
+file, and **DigitalOcean's $200 student credit ended in August 2026.**
+
+### Azure for Students — the always-on answer
+
+$100 credit, 12 months, **no card at signup** — verified with your college
+email, or a student ID upload if the email is not recognised. A student
+subscription stops when the credit runs out rather than billing you, which is
+exactly the behaviour you want.
+
+Run the server on **Linux** App Service B1: roughly **$13/month**, so the credit
+is about seven months of always-on multiplayer, with Always On available and a
+350-concurrent-WebSocket limit — far more than a 20-car grid needs.
+
+> The `--is-linux` flag below is load-bearing. The same B1 tier on Windows is
+> about four times the price, which would turn seven months into under two.
 
 ```bash
-# Once, with the Azure CLI installed and `az login` done:
+# Once, with the Azure CLI installed and `az login` done.
 az group create --name apex --location eastus
-az appservice plan create --name apex-plan --resource-group apex --sku B1 --is-linux
-az webapp create --resource-group apex --plan apex-plan --name apex-circuit \
-  --runtime "NODE:20-lts"
-az webapp config set --resource-group apex --name apex-circuit --web-sockets-enabled true
+
+# Linux. See the note above.
+az appservice plan create --name apex-plan --resource-group apex \
+  --sku B1 --is-linux
+
+az webapp create --resource-group apex --plan apex-plan \
+  --name apex-circuit --runtime "NODE:20-lts"
+
+# WebSockets are off by default, and the race server is nothing without them.
+az webapp config set --resource-group apex --name apex-circuit \
+  --web-sockets-enabled true --always-on true
+
 az webapp config appsettings set --resource-group apex --name apex-circuit \
   --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true
+
 az webapp deployment source config --resource-group apex --name apex-circuit \
-  --repo-url https://github.com/<you>/car-racing-game --branch main --manual-integration
+  --repo-url https://github.com/<you>/car-racing-game \
+  --branch main --manual-integration
 ```
 
-Set **billing alerts** on the credit before you do this. A student subscription
-stops rather than bills you when the credit runs out, which is the behaviour you
-want, but knowing it is running low is better than discovering it stopped.
+Then point the Pages client at it exactly as with Render, using the
+`APEX_SERVER_URL` variable.
 
-Other pack entries are a worse fit here, for reasons worth knowing:
+Set a **billing alert** on the credit while you are in there. The subscription
+stopping is the safe failure, but knowing it is close beats discovering it
+stopped.
 
-- **DigitalOcean ($200)** — genuinely good hosting, but verification normally
-  wants a card or PayPal even when the credit covers the bill.
-- **Heroku** — no free tier any more; the student offer is credits, same trade
-  as Azure but with less of them.
-- **AWS Educate / Free Tier** — the standard AWS free tier asks for a card at
-  signup. AWS Educate avoids that but does not give you a normal account you can
-  deploy a Node server to.
+### If you would rather not spend the credit at all
 
----
+Azure's **free F1 tier** costs nothing and now supports WebSockets — but only
+**five concurrent connections**, with 60 CPU-minutes a day and no Always On. A
+five-car race with friends would fit; a full grid would not, and it sleeps like
+Render does. It is a real option, just a narrow one.
 
 ## Running it yourself
 
