@@ -833,10 +833,17 @@ export function defaultUiSettings() {
     quality: 'high',
     volumes: { master: 0.75, engine: 0.85, tires: 0.9, wind: 0.6, effects: 0.9, ui: 0.8 },
     camera: { shake: 1.0, fov: 1.0 },
+    // Defaults chosen for a keyboard, where every input is full lock and full
+    // throttle. Across thirty deliberately abusive manoeuvres — full lock on
+    // the power from 60 to 200 km/h — these take the car from spinning in
+    // seventeen of them to none, for about a second on nought to a hundred.
+    // It still slides; it just no longer spins, which is the difference
+    // between a car that is demanding and one that feels broken. Every one of
+    // them turns off in Settings.
     assists: {
-      tractionControl: 0.5,
+      tractionControl: 0.4,
       abs: 0.5,
-      stabilityControl: 0,
+      stabilityControl: 0.5,
       steeringAssist: 0,
       automaticGears: true,
       autoPitLimiter: true,

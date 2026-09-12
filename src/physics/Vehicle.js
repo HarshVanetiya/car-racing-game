@@ -120,6 +120,11 @@ export class Vehicle {
     this.drsActive = false;
     this.drsArmed = false;
 
+    // Traction control loop state: how much throttle it is currently holding
+    // back, 0..1.
+    this._tcCut = 0;
+    this.tcActive = false;
+
     // Telemetry surfaced to HUD, audio, AI and effects.
     this.telemetry = {
       lateralG: 0, longitudinalG: 0, verticalG: 0,
@@ -565,13 +570,60 @@ export class Vehicle {
     // --- Throttle, with optional traction control --------------------------
     let throttle = clamp01(this.controls.throttle);
 
+    // --- Traction control ---------------------------------------------------
+    // A closed loop on the driven wheels, which is how the real thing works and
+    // the only way it can actually hold slip where the driver wants it. The
+    // open-loop version this replaces scaled the throttle by a fixed fraction
+    // of how far past a threshold the wheels were, which left the rears
+    // spinning at eighty percent slip on a medium setting — traction control
+    // that did not control traction, and a car that spun under power.
+    //
+    // It works purely through the throttle. It gives away no grip the tyres do
+    // not have, and switching it off gives the car back exactly as it was.
     if (this.assists.tractionControl > 0) {
-      const rearSlip = Math.max(this.wheels[RL].slipRatio, this.wheels[RR].slipRatio);
-      const threshold = lerp(0.28, 0.13, this.assists.tractionControl);
-      if (rearSlip > threshold) {
-        const excess = clamp01((rearSlip - threshold) / 0.25);
-        throttle *= lerp(1, 0.12, excess * this.assists.tractionControl);
+      const level = this.assists.tractionControl;
+      const rl = this.wheels[RL], rr = this.wheels[RR];
+
+      // Target a wheel SPEED, not a slip ratio. Slip ratio runs to eight under
+      // real wheelspin, and a loop fed a number with that range can only slam
+      // the throttle shut and then fling it open again. Expressed as a speed
+      // the error is naturally bounded, which is what makes the loop settle.
+      const road = Math.max(Math.abs(forwardSpeed), 2.5);
+      const targetSlip = lerp(0.22, 0.10, level);
+      const targetOmega = (road * (1 + targetSlip)) / this.car.wheelRadiusRear;
+      const fastest = Math.max(rl.angularVelocity, rr.angularVelocity);
+      let error = clamp((fastest - targetOmega) / Math.max(targetOmega, 6), -1, 1);
+
+      // Combined slip is normalised so 1.0 means "at the limit in any
+      // direction". Watching it catches power-on oversteer, which a system
+      // looking only at wheel speed never sees: a rear tyre can be right at
+      // its limit sideways while turning at exactly the right speed.
+      //
+      // It counts only while the wheels are being DRIVEN. Under braking the
+      // same reading means something else entirely, and cutting a throttle
+      // that is already closed cannot help.
+      if (fastest > targetOmega * 0.5) {
+        const worst = Math.max(rl.tire.combinedSlip, rr.tire.combinedSlip);
+        error = Math.max(error, clamp((worst - 1.1) * 0.5, -1, 1));
       }
+
+      // Cut briskly, restore gently: the asymmetry is what stops it hunting.
+      // How briskly scales with how bad it is, so a standing start — where the
+      // wheels can be turning many times road speed within a few milliseconds
+      // — is caught almost at once, while small corrections stay gentle enough
+      // not to feel like the throttle is being snatched away.
+      const rate = error > 0 ? lerp(5.5, 24, clamp01(error)) : 2.0;
+      this._tcCut = clamp01(this._tcCut + error * rate * dt);
+      // It needs real authority to hold slip in a short first gear: even a
+      // fifth of the throttle is a couple of thousand newton-metres at the
+      // axle, which spins the wheels regardless. Stopping just short of a
+      // fully closed throttle keeps the driveline in tension rather than
+      // pushing it into overrun.
+      throttle *= 1 - this._tcCut * lerp(0.80, 0.97, level);
+      this.tcActive = this._tcCut > 0.02;
+    } else {
+      this._tcCut = 0;
+      this.tcActive = false;
     }
 
     // Pit limiter: a hard speed cap enforced through the throttle, exactly as
@@ -639,7 +691,14 @@ export class Vehicle {
     const engineTorque = engine.update(dt, engagement > 0.5);
 
     const engineOmega = engine.rpm * RPM_TO_RADS;
-    const gearboxOmega = Math.abs(drivenOmega * trans.ratio);
+    // Signed, not a magnitude. Through a forward gear with the wheels turning
+    // forwards this is positive, and through reverse with the wheels turning
+    // backwards it is positive too — but when the wheels turn the wrong way
+    // for the selected gear it goes negative, which is precisely what the
+    // clutch below needs to know. Taking the magnitude here hides that, and a
+    // hidden sign becomes a driveline that accelerates the wheels harder the
+    // further backwards they go.
+    const gearboxOmega = drivenOmega * trans.ratio;
     const deltaOmega = engineOmega - gearboxOmega;
 
     let clutchTorque;
@@ -648,7 +707,17 @@ export class Vehicle {
     // spinning downstream of a clutch that is genuinely locked; treating it as
     // slip would have the clutch fight the drivetrain instead of letting the
     // rev limiter do its job.
-    if (speedEngage > 0.9) {
+    // A locked clutch ties engine speed to wheel speed through the gear, and
+    // that relationship only holds while the wheels turn the way the gear
+    // drives them. If they are turning the other way — dragged backwards by
+    // engine braking, or the car rolling back on a slope — the engine cannot
+    // follow them, and pretending otherwise sends the driveline into a
+    // runaway: the rpm is read as a magnitude, so the engine keeps making
+    // forward torque while the wheels accelerate further backwards.
+    const gearDirection = Math.sign(trans.ratio) || 1;
+    const drivelineAligned = drivenOmega * gearDirection >= -0.5;
+
+    if (speedEngage > 0.9 && drivelineAligned) {
       // Locked: the engine is geared straight to the wheels, so its speed is
       // dictated by wheel speed and all of its torque reaches the differential.
       this._clutchSlipping = false;
@@ -767,11 +836,23 @@ export class Vehicle {
     // The yaw rate a neutral car would have on this steering angle and speed.
     const targetYaw = (this.steerAngle * this.speed) /
                       (this.car.wheelbase + this.speed * this.speed * 0.0018);
-    const error = yawRate - targetYaw;
+    // It may only ever SLOW the car's rotation, never speed it up.
+    //
+    // Damping toward the commanded yaw rate sounds right and is not: a car
+    // already sliding at full lock is usually rotating SLOWER than that lock
+    // demands, so a plain error term pushes it to rotate faster — the
+    // stability system driving the spin it exists to prevent. Acting only on
+    // the amount by which the car is over-rotating, and only against it, means
+    // the worst it can do is nothing.
+    const overRotating = Math.abs(yawRate) - Math.abs(targetYaw);
+    if (overRotating <= 0) return;
+
     const excess = Math.abs(bodySlip) > 0.10 ? clamp01((Math.abs(bodySlip) - 0.10) / 0.25) : 0;
     const gain = this.assists.stabilityControl * excess * 2600;
     if (gain <= 0) return;
-    const torque = tmpVec().copy(body.up).scale(-error * gain);
+
+    const torque = tmpVec().copy(body.up)
+      .scale(-Math.sign(yawRate) * overRotating * gain);
     body.applyTorque(torque);
   }
 

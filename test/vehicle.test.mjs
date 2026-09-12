@@ -355,3 +355,132 @@ describe('assists help without driving for you', () => {
     assert.ok(lock(1) < 0.25, 'with ABS the wheels should mostly keep turning');
   });
 });
+
+describe('driver aids do their job without doing the driving', () => {
+  const ground = flatGround();
+
+  /** Full lock and a given throttle at a given speed — what a keyboard does. */
+  function provoke(assists, kmh, lock, throttle) {
+    const v = makeCar({ assists });
+    settle(v, ground);
+    accelerateTo(v, ground, kmh, 40);
+    if (v.speedKmh < kmh * 0.9) return null;
+    v.controls.steer = lock;
+    v.controls.throttle = throttle;
+    let worst = 0;
+    for (let i = 0; i < 3.5 / DT; i++) {
+      v.step(DT, ground, ENV);
+      worst = Math.max(worst, Math.abs(v.telemetry.slipAngleBody) * 180 / Math.PI);
+    }
+    return worst;
+  }
+
+  test('traction control keeps a standing start on the road', () => {
+    // A short first gear and eight hundred horsepower will break the rear
+    // tyres loose whatever the electronics do — that is the car, not a fault.
+    // What the aid has to do is stop it running away.
+    const peakSlip = (level) => {
+      const v = makeCar({ assists: { tractionControl: level } });
+      settle(v, ground);
+      v.controls.throttle = 1;
+      let worst = 0;
+      for (let i = 0; i < 4 / DT; i++) {
+        v.step(DT, ground, ENV);
+        worst = Math.max(worst, v.wheels[2].tire.slipRatio, v.wheels[3].tire.slipRatio);
+      }
+      return worst;
+    };
+
+    const bare = peakSlip(0);
+    const aided = peakSlip(0.4);            // the default
+    assert.ok(bare > 3, `the car should light up its tyres unaided, got ${bare.toFixed(1)}`);
+    assert.ok(aided < bare * 0.6,
+      `traction control barely helped: ${aided.toFixed(1)} against ${bare.toFixed(1)} unaided`);
+    assert.ok(peakSlip(1) < aided,
+      'a higher setting should allow less wheelspin than a lower one');
+  });
+
+  test('and gives away nothing when it is switched off', () => {
+    const off = makeCar({ assists: { tractionControl: 0 } });
+    settle(off, ground);
+    const tOff = accelerateTo(off, ground, 150, 30);
+
+    const on = makeCar({ assists: { tractionControl: 0.4 } });
+    settle(on, ground);
+    const tOn = accelerateTo(on, ground, 150, 30);
+
+    // It may cost a little — it is protecting traction, not finding grip —
+    // but it must never be the faster way round.
+    assert.ok(tOn >= tOff - 0.05, 'traction control must not be a speed boost');
+    assert.ok(tOn < tOff * 1.6, `traction control cost ${(tOn - tOff).toFixed(2)} s to 150 km/h`);
+  });
+
+  test('stability control never helps the car rotate', () => {
+    // A car already sliding at full lock is usually rotating SLOWER than that
+    // lock demands. A stability system that simply chases the commanded yaw
+    // rate will push it to rotate faster, driving the spin it exists to stop.
+    const v = makeCar({ assists: { stabilityControl: 1 } });
+    settle(v, ground);
+    accelerateTo(v, ground, 90, 30);
+    v.controls.steer = 1;
+    v.controls.throttle = 1;
+
+    for (let i = 0; i < 2.5 / DT; i++) {
+      const before = v.body.angularVelocity.y;
+      v.step(DT, ground, ENV);
+      const after = v.body.angularVelocity.y;
+      // Once the car is genuinely sliding, the aid may only ever calm it.
+      if (Math.abs(v.telemetry.slipAngleBody) > 0.3 && Math.abs(before) > 1.5) {
+        assert.ok(Math.abs(after) <= Math.abs(before) + 0.25,
+          `yaw rate grew from ${before.toFixed(2)} to ${after.toFixed(2)} while sliding`);
+      }
+    }
+  });
+
+  test('the default aids stop the car spinning under provocation', () => {
+    const bare = { tractionControl: 0, stabilityControl: 0 };
+    const aided = { tractionControl: 0.4, stabilityControl: 0.5 };
+    let bareSpins = 0, aidedSpins = 0, cases = 0;
+
+    for (const kmh of [60, 120, 180]) {
+      for (const lock of [0.7, 1.0]) {
+        const a = provoke(bare, kmh, lock, 1);
+        const b = provoke(aided, kmh, lock, 1);
+        if (a === null || b === null) continue;
+        cases++;
+        if (a > 45) bareSpins++;
+        if (b > 45) aidedSpins++;
+      }
+    }
+    assert.ok(cases >= 4, 'the sweep should actually have run');
+    assert.ok(aidedSpins < bareSpins,
+      `aids made no difference: ${aidedSpins}/${cases} spins with, ${bareSpins}/${cases} without`);
+    assert.ok(aidedSpins <= 1, `still spun ${aidedSpins} times out of ${cases} with the aids on`);
+  });
+
+  test('the driveline cannot run away when a wheel is turned backwards', () => {
+    // Engine speed is tied to wheel speed through the gear, and reading that
+    // as a magnitude hides the case where the wheels turn the wrong way for
+    // the gear — whereupon the driveline drives them harder the further
+    // backwards they go.
+    const v = makeCar();
+    settle(v, ground);
+    accelerateTo(v, ground, 80, 30);
+
+    // Force the driven wheels backwards, as a savage downshift or a spin can.
+    v.wheels[2].angularVelocity = -40;
+    v.wheels[3].angularVelocity = -40;
+    v.controls.throttle = 1;
+
+    let worst = 0;
+    for (let i = 0; i < 3 / DT; i++) {
+      v.step(DT, ground, ENV);
+      worst = Math.min(worst, v.wheels[2].angularVelocity, v.wheels[3].angularVelocity);
+      assert.ok(Number.isFinite(v.wheels[2].angularVelocity), 'wheel speed went non-finite');
+    }
+    assert.ok(worst > -200,
+      `a driven wheel ran away to ${worst.toFixed(0)} rad/s backwards`);
+    assert.ok(v.engine.rpm <= v.engine.maxRpm * 1.25,
+      `engine reached ${v.engine.rpm.toFixed(0)} rpm`);
+  });
+});
