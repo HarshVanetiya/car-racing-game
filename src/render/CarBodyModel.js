@@ -17,8 +17,10 @@ import { normaliseForMerge } from './mergeStatic.js';
  * frame's draw calls on a modest machine. The model is one mesh per material
  * and 1,030 triangles, which is both better looking and far cheaper.
  *
- * The model's own wheels are discarded: ours have to steer, spin and move with
- * the suspension, so `CarModel` builds those itself.
+ * The model's wheels are lifted out and re-used on our own hubs rather than
+ * left where they sit: ours have to steer, spin and follow the suspension, but
+ * the mesh is the same one the body was drawn with, so the car looks of a
+ * piece.
  */
 
 // Resolved against the deployed base path, so the model is found whether the
@@ -56,13 +58,21 @@ export function loadCarBody(wheelbase) {
       (gltf) => {
         try {
           prepared = prepare(gltf.scene, wheelbase);
+          if (!prepared) console.warn('[apex] car model loaded but could not be prepared');
           resolve(prepared);
-        } catch {
+        } catch (err) {
+          // The procedural car still carries the game, but a mistake in here
+          // must not look identical to "the file was not there". Silence is
+          // how a broken model stays broken.
+          console.warn('[apex] car model could not be prepared:', err);
           resolve(null);
         }
       },
       undefined,
-      () => resolve(null)          // offline, blocked, or missing: use the fallback
+      (err) => {
+        console.warn('[apex] car model unavailable, using the built-in car:', err?.message || err);
+        resolve(null);           // offline, blocked, or missing: use the fallback
+      }
     );
   });
   return loadPromise;
@@ -101,11 +111,20 @@ function prepare(scene, wheelbase) {
   });
   if (parts.length === 0) return null;
 
+  // Everything below is in model units until this is applied.
+  const scale = wheelbase / MODEL_WHEELBASE;
+
   // The chassis is the largest part; anything sharing its node is chassis too.
   const largest = parts.reduce((a, b) => (b.volume > a.volume ? b : a));
   const chassisParent = largest.object.parent;
   const chassis = parts.filter((p) => p.object.parent === chassisParent);
   if (chassis.length === 0) return null;
+
+  // Everything else is the model's wheels. We do not use them where they sit —
+  // ours have to steer, spin and follow the suspension — but one of them, cut
+  // free and centred on its own axle, is a far better wheel than the cylinder
+  // we would otherwise build, and it matches the body it came with.
+  const wheel = extractWheel(parts.filter((p) => p.object.parent !== chassisParent), scale);
 
   // Merge the chassis by material.
   const buckets = new Map();
@@ -120,11 +139,12 @@ function prepare(scene, wheelbase) {
   }
   if (buckets.size === 0) return null;
 
-  // The shell is whichever material covers the most of the car, and the
-  // largest of the rest is the trim. Those are the two the team colours go on.
+  // Only the bodywork takes the team colour: it is whichever material covers
+  // most of the car. The rest is structure — floor, nose underside, mirrors —
+  // and painting that too was what turned the model's black panels into large
+  // white ones, because a car's accent colour is often white.
   const byArea = [...buckets.values()].sort((a, b) => b.tris - a.tris);
   const shellName = byArea[0]?.name;
-  const trimName = byArea.find((b) => b.name !== shellName && !isGlass(b.name))?.name;
 
   const group = new THREE.Group();
   group.name = 'car-body-model';
@@ -137,10 +157,15 @@ function prepare(scene, wheelbase) {
     if (!geometry) continue;
 
     const glass = isGlass(bucket.name);
+    const painted = bucket.name === shellName;
+    // Only the painted bodywork gets a metallic finish. Applying it to
+    // everything turns the model's black trim into light grey: a black
+    // metal with nothing to reflect renders as flat lit surface, which is
+    // why the nose and floor came out looking silver.
     const material = new THREE.MeshStandardMaterial({
       color: bucket.material?.color ? bucket.material.color.clone() : new THREE.Color(0xcccccc),
-      roughness: glass ? 0.1 : 0.32,
-      metalness: glass ? 0.0 : 0.62,
+      roughness: glass ? 0.1 : painted ? 0.30 : 0.62,
+      metalness: glass ? 0.0 : painted ? 0.55 : 0.05,
       transparent: glass,
       opacity: glass ? 0.55 : 1
     });
@@ -152,7 +177,6 @@ function prepare(scene, wheelbase) {
     mesh.receiveShadow = true;
     group.add(mesh);
     if (bucket.name === shellName) tintable.push({ name: mesh.name, role: 'shell' });
-    else if (bucket.name === trimName) tintable.push({ name: mesh.name, role: 'trim' });
   }
   if (group.children.length === 0) return null;
 
@@ -166,7 +190,7 @@ function prepare(scene, wheelbase) {
   outer.add(group);
 
   // Scale to our car, then sit it on the road, centred.
-  outer.scale.setScalar(wheelbase / MODEL_WHEELBASE);
+  outer.scale.setScalar(scale);
   outer.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(outer);
   outer.position.x -= (box.min.x + box.max.x) * 0.5;
@@ -175,7 +199,7 @@ function prepare(scene, wheelbase) {
   outer.updateMatrixWorld(true);
 
   const size = new THREE.Box3().setFromObject(outer).getSize(new THREE.Vector3());
-  return { group: outer, tintable, size };
+  return { group: outer, tintable, size, wheel };
 }
 
 /**
@@ -212,6 +236,54 @@ function facesBackwards(group) {
   return heightAtPosZ > heightAtNegZ;
 }
 
+/**
+ * One wheel from the model, merged, centred on its axle and scaled to our car.
+ *
+ * Returns the mesh plus the radius it ended up with, so the caller can size it
+ * to each corner: front and rear tyres are not the same size, and a wheel that
+ * does not match the contact patch the physics is using looks wrong in exactly
+ * the way people notice.
+ */
+function extractWheel(parts, scale) {
+  if (parts.length === 0) return null;
+
+  // All four are the same wheel in different places; take the group belonging
+  // to one of them.
+  const parent = parts[0].object.parent;
+  const mine = parts.filter((p) => p.object.parent === parent);
+
+  const geometries = [];
+  for (const part of mine) {
+    const g = normaliseForMerge(part.geometry);
+    if (g) geometries.push(g);
+  }
+  if (geometries.length === 0) return null;
+
+  const geometry = geometries.length === 1 ? geometries[0] : mergeGeometries(geometries, false);
+  if (!geometry) return null;
+
+  // Centre it on its own axle and bring it into our units.
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  const centre = new THREE.Vector3(
+    (box.min.x + box.max.x) * 0.5,
+    (box.min.y + box.max.y) * 0.5,
+    (box.min.z + box.max.z) * 0.5
+  );
+  geometry.translate(-centre.x, -centre.y, -centre.z);
+  geometry.scale(scale, scale, scale);
+  geometry.computeBoundingSphere();
+  geometry.computeBoundingBox();
+
+  const sized = geometry.boundingBox;
+  return {
+    geometry,
+    // The axle runs along X, so the tyre's radius is its half-height.
+    radius: (sized.max.y - sized.min.y) * 0.5,
+    width: sized.max.x - sized.min.x
+  };
+}
+
 function isGlass(name) {
   return /glass|window|screen/i.test(name || '');
 }
@@ -220,10 +292,9 @@ function isGlass(name) {
  * A copy of the prepared body, tinted to a car's colours. Materials are cloned
  * per car so one team's paint never bleeds into another's.
  */
-export function instantiateCarBody(source, colour, accent) {
+export function instantiateCarBody(source, colour) {
   const group = source.group.clone(true);
   const shell = new THREE.Color(colour);
-  const trim = new THREE.Color(accent);
   const roles = new Map(source.tintable.map((t) => [t.name, t.role]));
 
   group.traverse((o) => {
@@ -231,9 +302,7 @@ export function instantiateCarBody(source, colour, accent) {
     o.material = o.material.clone();
     o.castShadow = true;
     o.receiveShadow = true;
-    const role = roles.get(o.name);
-    if (role === 'shell') o.material.color.copy(shell);
-    else if (role === 'trim') o.material.color.copy(trim);
+    if (roles.get(o.name) === 'shell') o.material.color.copy(shell);
   });
   return group;
 }

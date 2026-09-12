@@ -72,7 +72,7 @@ export class CarModel {
    */
   _applyModel(source) {
     if (this.usingModel || !source) return;
-    const body = instantiateCarBody(source, this.colour, this.accent);
+    const body = instantiateCarBody(source, this.colour);
 
     // Sit the model on the road: the physics origin is the centre of mass,
     // which is `cogHeight` above the surface.
@@ -94,6 +94,12 @@ export class CarModel {
       this.rainLight.position.set(0, size.y * 0.34, -halfLen + 0.06);
       this.rainLight.userData.dynamic = true;
     }
+
+    // Put the model's own wheels on our hubs, sized to each corner. The tyre
+    // the physics is using is not the same size front and rear, and a wheel
+    // that does not match its contact patch looks wrong in the way people
+    // notice without being able to say why.
+    if (source.wheel) this._applyModelWheels(source.wheel);
 
     // Everything else the procedural body drew is now redundant. Drop it
     // rather than hiding it: a hidden mesh still costs a matrix update every
@@ -260,12 +266,44 @@ export class CarModel {
     }
   }
 
+  /**
+   * Swap the procedural tyres for the model's, keeping everything the
+   * simulation needs to show through them: the compound band on the sidewall
+   * and the brake disc that glows when a corner is being overworked.
+   */
+  _applyModelWheels(wheel) {
+    const car = this.car;
+    for (let i = 0; i < this.wheelMeshes.length; i++) {
+      const w = this.wheelMeshes[i];
+      const front = w.front;
+      const radius = front ? car.wheelRadiusFront : car.wheelRadiusRear;
+      const width = front ? car.tireWidthFront : car.tireWidthRear;
+
+      const mesh = new THREE.Mesh(wheel.geometry, this.tyreMat);
+      const radial = radius / Math.max(wheel.radius, 1e-4);
+      const axial = width / Math.max(wheel.width, 1e-4);
+      // The axle runs along X, so width scales on that axis alone.
+      mesh.scale.set(axial * (i % 2 === 0 ? -1 : 1), radial, radial);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      // Drop the procedural tyre, rim and spoke; keep the rest.
+      for (const child of [...w.spinner.children]) {
+        if (child.userData.keep) continue;
+        w.spinner.remove(child);
+        if (child.geometry) child.geometry.dispose();
+      }
+      w.spinner.add(mesh);
+    }
+  }
+
   _buildWheels() {
     const car = this.car;
     const tyreMat = new THREE.MeshStandardMaterial({
       color: 0x14161a, roughness: 0.95, metalness: 0.0
     });
     this._materials.push(tyreMat);
+    this.tyreMat = tyreMat;
     // A coloured sidewall band, so compound is readable at a glance.
     this.sidewallMats = [];
 
@@ -306,6 +344,9 @@ export class CarModel {
         );
         band.rotation.y = Math.PI / 2;
         band.position.x = s * spec.w * 0.48;
+        // The compound colour has to survive the model swap: it is the only
+        // way to see at a glance what everyone is running.
+        band.userData.keep = true;
         spinner.add(band);
       }
 
