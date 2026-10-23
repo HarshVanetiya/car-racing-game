@@ -6,6 +6,10 @@ does when it finds it again — comes out of a vehicle dynamics simulation
 written from scratch. There are no "handling" stats, no speed boosts, and
 nothing that steers the car on the driver's behalf.
 
+> **Status:** work in progress. The driving model and multiplayer still need tuning.
+>
+> **How this was built:** written with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding agent, working from my requirements.
+
 The design principle the whole project is built around:
 
 > **The player should win because they drove the car better, not because the
